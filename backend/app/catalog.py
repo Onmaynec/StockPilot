@@ -6,6 +6,7 @@ from collections import Counter
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from psycopg.errors import UniqueViolation
 
@@ -437,3 +438,95 @@ def import_products(data: CsvPayload, user=Depends(require("admin"))):
         audit(c, user["id"], "products.import", "import", "csv",
               after={"count": len(result["items"])})
         return {"created": len(result["items"])}
+
+
+@router.get("/movements", tags=["Stocks"])
+def movements(sku: str = "", warehouseId: str | None = None,
+              lotId: str | None = None, documentId: str | None = None,
+              page: int = 1, limit: int = 50, user=Depends(current_user)):
+    """Search posted movements by SKU, warehouse, lot and source document."""
+    if warehouseId:
+        warehouse_access(user, warehouseId)
+    page, limit = max(1, page), max(1, min(limit, 100))
+    with pool.connection() as c:
+        rows = all_rows(c, """
+          SELECT m.id,m.created_at,m.qty,m.doc_type,m.doc_id,
+                 m.actor_id,p.sku,p.name,w.code AS warehouse,
+                 b.code AS bin,lot.code AS lot,m.warehouse_id,
+                 count(*) OVER()::int AS total
+          FROM stock_movements m
+          JOIN products p ON p.id=m.product_id
+          JOIN warehouses w ON w.id=m.warehouse_id
+          JOIN bins b ON b.id=m.bin_id
+          JOIN lots lot ON lot.id=m.lot_id
+          WHERE (%s='' OR p.sku ILIKE %s)
+            AND (%s::uuid IS NULL OR m.warehouse_id=%s::uuid)
+            AND (%s::uuid IS NULL OR m.lot_id=%s::uuid)
+            AND (%s::uuid IS NULL OR m.doc_id=%s::uuid)
+            AND (%s OR m.warehouse_id=ANY(%s::uuid[]))
+          ORDER BY m.id DESC LIMIT %s OFFSET %s
+        """, (sku, f"%{sku}%", warehouseId, warehouseId,
+              lotId, lotId, documentId, documentId, user["role"] == "admin",
+              user["warehouses"], limit, (page - 1) * limit))
+        return {"items": clean(rows), "total": rows[0]["total"] if rows else 0,
+                "page": page, "limit": limit}
+
+
+def csv_response(rows, fields, filename):
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(fields)
+    for row in rows:
+        writer.writerow([row.get(key, "") for key in fields])
+    return Response(content="\ufeff" + output.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"',
+                             "Cache-Control": "no-store"})
+
+
+@router.get("/export/products.csv", tags=["CSV"])
+def export_products(user=Depends(current_user)):
+    with pool.connection() as c:
+        rows = all_rows(c, """
+          SELECT sku,name,unit,barcode,category,pick_policy,active
+          FROM products ORDER BY sku LIMIT 50000
+        """)
+    return csv_response(rows,
+                        ["sku", "name", "unit", "barcode", "category", "pick_policy", "active"],
+                        "stockpilot-products.csv")
+
+
+@router.get("/export/stocks.csv", tags=["CSV"])
+def export_stocks(warehouseId: str | None = None, user=Depends(current_user)):
+    if warehouseId:
+        warehouse_access(user, warehouseId)
+    with pool.connection() as c:
+        rows = all_rows(c, """
+          WITH physical AS (
+            SELECT product_id,warehouse_id,sum(qty)::int AS physical
+            FROM stock_movements GROUP BY product_id,warehouse_id
+          ), held AS (
+            SELECT product_id,warehouse_id,sum(qty-shipped_qty)::int AS reserved
+            FROM reservations WHERE status='active'
+            GROUP BY product_id,warehouse_id
+          ), blocked AS (
+            SELECT product_id,warehouse_id,sum(qty)::int AS blocked
+            FROM stock_blocks WHERE active GROUP BY product_id,warehouse_id
+          )
+          SELECT p.sku,w.code AS warehouse,
+                 COALESCE(m.physical,0)::int AS physical,
+                 COALESCE(r.reserved,0)::int AS reserved,
+                 COALESCE(b.blocked,0)::int AS blocked,
+                 (COALESCE(m.physical,0)-COALESCE(r.reserved,0)
+                  -COALESCE(b.blocked,0))::int AS available
+          FROM stock_guards g
+          JOIN products p ON p.id=g.product_id
+          JOIN warehouses w ON w.id=g.warehouse_id
+          LEFT JOIN physical m ON m.product_id=g.product_id AND m.warehouse_id=g.warehouse_id
+          LEFT JOIN held r ON r.product_id=g.product_id AND r.warehouse_id=g.warehouse_id
+          LEFT JOIN blocked b ON b.product_id=g.product_id AND b.warehouse_id=g.warehouse_id
+          WHERE (%s::uuid IS NULL OR g.warehouse_id=%s::uuid)
+            AND (%s OR g.warehouse_id=ANY(%s::uuid[]))
+          ORDER BY p.sku,w.code LIMIT 50000
+        """, (warehouseId, warehouseId, user["role"] == "admin", user["warehouses"]))
+    return csv_response(rows, ["sku","warehouse","physical","reserved","blocked","available"],
+                        "stockpilot-stocks.csv")
