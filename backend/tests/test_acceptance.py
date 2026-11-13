@@ -235,3 +235,103 @@ def test_auth_restricts_other_roles(env):
     }).status_code == 403
     assert client.get("/api/v1/audit", headers=users["manager"]).status_code == 403
     assert client.get("/api/v1/products").status_code == 401
+
+
+def test_at04_transfer_rollback_on_database_failure(env):
+    client, users, ids = env
+    receipt(env, 5)
+    second_bin = client.post("/api/v1/bins", headers=users["admin"], json={
+        "zoneId": ids["zone"], "code": "A-02"
+    })
+    assert second_bin.status_code == 201, second_bin.text
+    bid = second_bin.json()["id"]
+    transfer = client.post("/api/v1/transfers", headers=users["picker"], json={
+        "productId": ids["product"], "lotId": ids["lot"],
+        "fromBinId": ids["bin"], "toBinId": bid, "qty": 3
+    })
+    assert transfer.status_code == 201, transfer.text
+    tid = transfer.json()["id"]
+    with pool.connection() as c:
+        c.execute("""
+          CREATE FUNCTION test_fail_transfer() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN
+            IF NEW.doc_type='transfer' AND NEW.qty>0 THEN
+              RAISE EXCEPTION 'Synthetic failure after outbound movement';
+            END IF;
+            RETURN NEW;
+          END; $$
+        """)
+        c.execute("""
+          CREATE TRIGGER test_fail_transfer_trigger
+          BEFORE INSERT ON stock_movements
+          FOR EACH ROW EXECUTE FUNCTION test_fail_transfer()
+        """)
+    try:
+        response = client.post("/api/v1/transfers/" + tid + "/confirm",
+                               headers={**users["picker"], "Idempotency-Key": "transfer-failure-key"})
+        assert response.status_code == 500, response.text
+        with pool.connection() as c:
+            assert one(c, """
+              SELECT count(*) AS cnt FROM stock_movements
+              WHERE doc_type='transfer' AND doc_id=%s
+            """, (tid,))["cnt"] == 0
+            assert one(c, "SELECT status FROM transfers WHERE id=%s", (tid,))["status"] == "draft"
+    finally:
+        with pool.connection() as c:
+            c.execute("DROP TRIGGER test_fail_transfer_trigger ON stock_movements")
+            c.execute("DROP FUNCTION test_fail_transfer()")
+
+
+def test_reservation_replay_does_not_bypass_warehouse_rights(env):
+    client, users, ids = env
+    receipt(env, 1)
+    oid = create_order(env)
+    key = "shared-original-request"
+    assert reserve(env, oid, key).status_code == 200
+    with pool.connection() as c:
+        outsider = str(uuid4())
+        c.execute("""
+          INSERT INTO users(id,email,password_hash,role,full_name)
+          VALUES(%s,'outsider@test.local',%s,'manager','Outsider')
+        """, (outsider, hash_password("test-password!")))
+    logged_in = client.post("/api/v1/auth/login", json={
+        "email": "outsider@test.local", "password": "test-password!"
+    })
+    token = logged_in.json()["accessToken"]
+    response = client.post("/api/v1/orders/" + oid + "/reserve",
+                           headers={"Authorization": "Bearer " + token,
+                                    "Idempotency-Key": key},
+                           json={"ttlMinutes": 60})
+    assert response.status_code == 403, response.text
+
+
+def test_fefo_avoids_expired_batches(env):
+    client, users, ids = env
+    receipt(env, 3)
+    with pool.connection() as c:
+        c.execute("UPDATE lots SET expires_at=CURRENT_DATE-1 WHERE id=%s", (ids["lot"],))
+    replacement = client.post("/api/v1/lots", headers=users["admin"], json={
+        "productId": ids["product"], "code": "L2", "expiresAt": "2099-01-01"
+    })
+    assert replacement.status_code == 201, replacement.text
+    newlot = replacement.json()["id"]
+    r = client.post("/api/v1/receipts", headers=users["manager"], json={
+        "items": [{"productId": ids["product"], "binId": ids["bin"],
+                   "lotId": newlot, "plannedQty": 2}]
+    })
+    rid = r.json()["id"]
+    row = client.get("/api/v1/receipts/" + rid, headers=users["picker"]).json()["items"][0]
+    confirm = client.post("/api/v1/receipts/" + rid + "/confirm",
+                          headers={**users["picker"], "Idempotency-Key": str(uuid4())},
+                          json={"items": [{"lineId": row["id"], "actualQty": 2}]})
+    assert confirm.status_code == 200, confirm.text
+    oid = create_order(env, 2)
+    result = reserve(env, oid)
+    assert result.status_code == 200, result.text
+    with pool.connection() as c:
+        allocations = c.execute("""
+          SELECT lot_id FROM reservations r JOIN order_lines l ON l.id=r.order_line_id
+          WHERE l.order_id=%s
+        """, (oid,)).fetchall()
+        assert len(allocations) == 1
+        assert str(allocations[0]["lot_id"]) == str(newlot)
