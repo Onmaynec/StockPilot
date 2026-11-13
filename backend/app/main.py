@@ -72,7 +72,9 @@ async def logging_middleware(request: Request, call_next):
     token = request_id.set(rid)
     begin = time.perf_counter()
     try:
-        source = request.client.host if request.client else "unknown"
+        forwarded = request.headers.get("x-forwarded-for", "")
+        source = (forwarded.rsplit(",", 1)[-1].strip() if forwarded
+                  else (request.client.host if request.client else "unknown"))
         route_path = request.url.path
         limited = (
             (route_path == "/api/v1/auth/login"
