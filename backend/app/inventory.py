@@ -174,6 +174,13 @@ def approve_count(count_id: str, user=Depends(require("admin", "supervisor"))):
           SELECT * FROM inventory_lines WHERE count_id=%s ORDER BY product_id,bin_id,lot_id
         """, (count_id,))
         lock_stock(c, [(line["product_id"], count["warehouse_id"]) for line in lines])
+        # Any change after the frozen snapshot (including a newly arrived lot)
+        # invalidates approval; otherwise a count could erase a legitimate receipt.
+        if one(c, """
+          SELECT 1 FROM stock_movements m JOIN bins b ON b.id=m.bin_id
+          WHERE b.zone_id=%s AND m.created_at>%s LIMIT 1
+        """, (count["zone_id"], count["created_at"])):
+            error("STALE_SNAPSHOT", "После начала пересчёта в зоне были движения", 409)
         deltas = []
         for line in lines:
             current = one(c, """
