@@ -44,7 +44,7 @@ def seed():
                   INSERT INTO bins(id,warehouse_id,zone_id,code) VALUES(%s,%s,%s,%s)
                   ON CONFLICT(id) DO NOTHING
                 """, (b, w, z, "A-01"))
-            c.executemany("""
+            c.cursor().executemany("""
               INSERT INTO customers(id,name) VALUES(%s,%s)
               ON CONFLICT(id) DO NOTHING
             """, [(uid(f"customer:{i}"), f"Клиент {i:03d}") for i in range(1, 201)])
@@ -69,11 +69,11 @@ def seed():
                 if role == "director":
                     email = "director@stockpilot.local"
                 users.append((user_id, email, hashed, role, f"{role_names[role]} {i}"))
-            c.executemany("""
+            c.cursor().executemany("""
               INSERT INTO users(id,email,password_hash,role,full_name)
               VALUES (%s,%s,%s,%s,%s) ON CONFLICT(id) DO NOTHING
             """, users)
-            c.executemany("""
+            c.cursor().executemany("""
               INSERT INTO user_warehouses(user_id,warehouse_id)
               VALUES(%s,%s) ON CONFLICT DO NOTHING
             """, [(u[0], w) for u in users for w in warehouses])
@@ -98,21 +98,21 @@ def seed():
                                   lot, qty, "seed", uid(f"seed:{i}"), users[0][0], posted))
             # Bulk inserts avoid thousands of network round trips.
             for offset in range(0, len(products), 1000):
-                c.executemany("""
+                c.cursor().executemany("""
                   INSERT INTO products(id,sku,name,unit,barcode,category,pick_policy)
                   VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(id) DO NOTHING
                 """, products[offset:offset + 1000])
             for offset in range(0, len(lots), 1000):
-                c.executemany("""
+                c.cursor().executemany("""
                   INSERT INTO lots(id,product_id,code,expires_at)
                   VALUES(%s,%s,%s,%s) ON CONFLICT(id) DO NOTHING
                 """, lots[offset:offset + 1000])
-            c.executemany("""
+            c.cursor().executemany("""
               INSERT INTO stock_guards(product_id,warehouse_id)
               VALUES(%s,%s) ON CONFLICT DO NOTHING
             """, guards)
             for offset in range(0, len(movements), 1000):
-                c.executemany("""
+                c.cursor().executemany("""
                   INSERT INTO stock_movements
                   (product_id,warehouse_id,bin_id,lot_id,qty,doc_type,doc_id,actor_id,created_at)
                   VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
