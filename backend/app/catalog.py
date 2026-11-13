@@ -172,6 +172,54 @@ def warehouses(user=Depends(current_user)):
         return clean(rows)
 
 
+
+@router.get("/zones", tags=["Catalog"])
+def zones(warehouseId: str, user=Depends(current_user)):
+    warehouse_access(user, warehouseId)
+    with pool.connection() as c:
+        return clean(all_rows(c, """
+          SELECT id,warehouse_id,code,name,active FROM zones
+          WHERE warehouse_id=%s ORDER BY code
+        """, (warehouseId,)))
+
+
+@router.get("/suppliers", tags=["Catalog"])
+def suppliers(user=Depends(current_user)):
+    with pool.connection() as c:
+        return clean(all_rows(c, "SELECT id,name,contact FROM suppliers ORDER BY name LIMIT 500"))
+
+
+@router.post("/suppliers", status_code=201, tags=["Catalog"])
+def create_supplier(data: dict, user=Depends(require("admin"))):
+    name = str(data.get("name", "")).strip()
+    if not name or len(name) > 250:
+        error("VALIDATION_ERROR", "Укажите название поставщика")
+    with pool.connection() as c, c.transaction():
+        row = one(c, "INSERT INTO suppliers(name,contact) VALUES(%s,%s) RETURNING *",
+                  (name, data.get("contact")))
+        audit(c, user["id"], "supplier.create", "supplier", row["id"],
+              after={"name": name})
+        return clean(row)
+
+
+@router.get("/customers", tags=["Catalog"])
+def customers(user=Depends(require("admin", "manager", "supervisor"))):
+    with pool.connection() as c:
+        return clean(all_rows(c, "SELECT id,name FROM customers ORDER BY name LIMIT 500"))
+
+
+@router.post("/customers", status_code=201, tags=["Catalog"])
+def create_customer(data: dict, user=Depends(require("admin", "manager"))):
+    name = str(data.get("name", "")).strip()
+    if not name or len(name) > 250:
+        error("VALIDATION_ERROR", "Укажите название клиента")
+    with pool.connection() as c, c.transaction():
+        row = one(c, "INSERT INTO customers(name) VALUES(%s) RETURNING *", (name,))
+        audit(c, user["id"], "customer.create", "customer", row["id"],
+              after={"name": name})
+        return clean(row)
+
+
 @router.post("/zones", status_code=201, tags=["Catalog"])
 def add_zone(data: ZoneIn, user=Depends(require("admin"))):
     with pool.connection() as c, c.transaction():
@@ -322,6 +370,7 @@ def parse_csv(c, content):
     items = []
     errors = []
     seen = set()
+    seen_barcodes = set()
     for number, row in enumerate(reader, start=2):
         if number > 12002:
             error("CSV_LIMIT", "Не более 12 000 строк за импорт")
@@ -335,9 +384,16 @@ def parse_csv(c, content):
         policy = (row.get("pick_policy") or "FIFO").strip()
         if policy not in ("FIFO", "FEFO"):
             errors.append({"row": number, "message": "Неизвестная политика отбора"})
+        barcode = (row.get("barcode") or "").strip() or None
+        if barcode:
+            if barcode in seen_barcodes:
+                errors.append({"row": number, "message": "Дублирующийся штрихкод в файле"})
+            seen_barcodes.add(barcode)
+        unit = (row.get("unit") or "шт").strip()
+        if not unit or len(unit) > 30 or len(barcode or "") > 100:
+            errors.append({"row": number, "message": "Некорректная единица или штрихкод"})
         items.append({"row": number, "sku": sku, "name": name,
-                      "unit": (row.get("unit") or "шт").strip(),
-                      "barcode": (row.get("barcode") or "").strip() or None,
+                      "unit": unit, "barcode": barcode,
                       "category": (row.get("category") or "Общее").strip(),
                       "pick_policy": policy})
     if items:
@@ -346,6 +402,14 @@ def parse_csv(c, content):
         existing = {r["sku"] for r in db_rows}
         errors.extend({"row": item["row"], "message": "SKU уже существует"}
                       for item in items if item["sku"] in existing)
+        barcodes = [item["barcode"] for item in items if item["barcode"]]
+        if barcodes:
+            existing_codes = {r["barcode"] for r in all_rows(
+                c, "SELECT barcode FROM products WHERE barcode=ANY(%s::text[])",
+                (barcodes,)
+            )}
+            errors.extend({"row": item["row"], "message": "Штрихкод уже существует"}
+                          for item in items if item["barcode"] in existing_codes)
     return {"items": items, "errors": errors, "valid": not errors,
             "columns": list(reader.fieldnames or [])}
 
