@@ -430,7 +430,9 @@ def picks(warehouseId: str | None = None, user=Depends(require("admin", "manager
 def assign_pick(task_id: str, data: AssignInput,
                 user=Depends(require("admin", "supervisor"))):
     with pool.connection() as c, c.transaction():
-        task = require_row(c, "pick_tasks", task_id)
+        task_ref = require_row(c, "pick_tasks", task_id)
+        c.execute("SELECT id FROM orders WHERE id=%s FOR UPDATE", (task_ref["order_id"],))
+        task = one(c, "SELECT * FROM pick_tasks WHERE id=%s FOR UPDATE", (task_id,))
         warehouse_access(user, task["warehouse_id"])
         if task["status"] != "pending":
             error("TASK_STATE", "Задание уже начато", 409)
@@ -459,10 +461,18 @@ def refresh_order_state(c, order_id):
 def confirm_pick(task_id: str, data: PickInput,
                  user=Depends(require("admin", "picker", "supervisor"))):
     with pool.connection() as c, c.transaction():
+        task_ref = one(c, "SELECT order_id FROM pick_tasks WHERE id=%s", (task_id,))
+        if not task_ref:
+            error("NOT_FOUND", "Задание не найдено", 404)
+        order = one(c, "SELECT * FROM orders WHERE id=%s FOR UPDATE", (task_ref["order_id"],))
+        if order["status"] not in ("confirmed", "picking"):
+            error("ORDER_STATE", "Заказ не находится в сборке", 409)
         task = one(c, """
-          SELECT t.*,r.expires_at,r.status AS reservation_status,p.sku,p.barcode
+          SELECT t.*,r.expires_at,r.status AS reservation_status,
+                 p.sku,p.barcode,p.pick_policy,l.expires_at AS lot_expiry
           FROM pick_tasks t JOIN reservations r ON r.id=t.reservation_id
           JOIN products p ON p.id=r.product_id
+          JOIN lots l ON l.id=r.lot_id
           WHERE t.id=%s FOR UPDATE OF t
         """, (task_id,))
         if not task:
@@ -474,6 +484,9 @@ def confirm_pick(task_id: str, data: PickInput,
             error("WRONG_ASSIGNEE", "Задание назначено другому сотруднику", 403)
         if task["reservation_status"] != "active" or task["expires_at"] <= datetime.now(timezone.utc):
             error("EXPIRED_RESERVATION", "Срок резерва истёк", 409)
+        if (task["pick_policy"] == "FEFO" and task["lot_expiry"] is not None
+                and task["lot_expiry"] < datetime.now(timezone.utc).date()):
+            error("EXPIRED_LOT", "Партия просрочена; отбор запрещён", 409)
         if data.barcode not in (task["sku"], task["barcode"]):
             error("BARCODE_MISMATCH", "Отсканирован другой товар", 409)
         if data.actualQty > task["expected_qty"]:
@@ -497,9 +510,13 @@ def confirm_pick(task_id: str, data: PickInput,
 @router.post("/picks/{task_id}/approve-shortage", tags=["Picking"])
 def approve_shortage(task_id: str, user=Depends(require("admin", "supervisor"))):
     with pool.connection() as c, c.transaction():
-        task = one(c, "SELECT * FROM pick_tasks WHERE id=%s FOR UPDATE", (task_id,))
-        if not task:
+        task_ref = one(c, "SELECT order_id FROM pick_tasks WHERE id=%s", (task_id,))
+        if not task_ref:
             error("NOT_FOUND", "Задание не найдено", 404)
+        order = one(c, "SELECT * FROM orders WHERE id=%s FOR UPDATE", (task_ref["order_id"],))
+        if order["status"] not in ("confirmed", "picking"):
+            error("ORDER_STATE", "Заказ не находится в сборке", 409)
+        task = one(c, "SELECT * FROM pick_tasks WHERE id=%s FOR UPDATE", (task_id,))
         warehouse_access(user, task["warehouse_id"])
         if task["status"] != "shortage_pending":
             error("TASK_STATE", "Нет ожидающего решения недобора", 409)
