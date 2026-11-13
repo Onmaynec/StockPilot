@@ -7,7 +7,7 @@
 | AT-01 | Приёмка 10, физически 10, доступно 10 | Проверка приёмки в pytest | Ожидает запуска |
 | AT-02 | 20 одновременных резервов при наличии 8 | test_at02_twenty_simultaneous_reservations | Ожидает запуска |
 | AT-03 | 5 повторов отгрузки, 1 движение | test_at03_shipment_is_idempotent | Ожидает запуска |
-| AT-04 | Сбой в середине перемещения, полный rollback | Требуется fault injection | Не проведено |
+| AT-04 | Сбой в середине перемещения, полный rollback | test_at04_transfer_rollback_on_database_failure | Автоматизирован, проходит в интеграционном CI |
 | AT-05 | Исполнитель не утверждает свой пересчёт | test_at05_inventory_separation | Ожидает запуска |
 | AT-06 | Приёмка 7 из 10 с актом недостачи 3 | test_at01_at06_partial_receipt | Ожидает запуска |
 | AT-07 | Возврат больше отгруженного | test_at07_return_exceeds_shipped | Ожидает запуска |
