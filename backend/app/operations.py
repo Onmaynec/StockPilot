@@ -133,6 +133,12 @@ def confirm_receipt(receipt_id: str, data: ReceiptActual,
                     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
                     user=Depends(require("admin", "picker", "supervisor"))):
     with pool.connection() as c, c.transaction():
+        permitted = all_rows(c, """
+          SELECT DISTINCT b.warehouse_id FROM receipt_lines l
+          JOIN bins b ON b.id=l.bin_id WHERE l.receipt_id=%s
+        """, (receipt_id,))
+        for item in permitted:
+            warehouse_access(user, item["warehouse_id"])
         scope = "receipt:" + receipt_id
         digest, previous = replay(c, scope, idempotency_key, data.model_dump())
         if previous is not None:
@@ -209,6 +215,15 @@ def confirm_transfer(transfer_id: str,
                      idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
                      user=Depends(require("admin", "picker", "supervisor"))):
     with pool.connection() as c, c.transaction():
+        sides = one(c, """
+          SELECT a.warehouse_id AS source_wh, b.warehouse_id AS target_wh
+          FROM transfers t JOIN bins a ON a.id=t.from_bin_id
+          JOIN bins b ON b.id=t.to_bin_id WHERE t.id=%s
+        """, (transfer_id,))
+        if not sides:
+            error("NOT_FOUND", "Перемещение не найдено", 404)
+        warehouse_access(user, sides["source_wh"])
+        warehouse_access(user, sides["target_wh"])
         digest, previous = replay(c, "transfer:" + transfer_id, idempotency_key, {})
         if previous is not None:
             return previous
@@ -299,6 +314,7 @@ def reserve_order(order_id: str, data: ReserveInput,
                   idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
                   user=Depends(require("admin", "manager"))):
     with pool.connection() as c, c.transaction():
+        order_access(c, order_id, user)
         digest, previous = replay(c, "reserve:" + order_id, idempotency_key,
                                   data.model_dump())
         if previous is not None:
@@ -319,7 +335,7 @@ def reserve_order(order_id: str, data: ReserveInput,
             warehouse_access(user, line["warehouse_id"])
             if not line["active"]:
                 error("INACTIVE_PRODUCT", "Архивный товар нельзя резервировать", 409)
-        lock_stock(c, [(l["product_id"], l["warehouse_id"]) for l in lines])
+        lock_stock(c, [(line["product_id"], line["warehouse_id"]) for line in lines])
         until = datetime.now(timezone.utc) + timedelta(minutes=data.ttlMinutes)
         reservations = []
         for line in lines:
@@ -350,7 +366,7 @@ def reserve_order(order_id: str, data: ReserveInput,
                     "sku": line["sku"], "missing": remaining,
                     "available": total["physical"] - total["reserved"] - total["blocked"],
                 })
-        for warehouse_id in {l["warehouse_id"] for l in lines}:
+        for warehouse_id in {line["warehouse_id"] for line in lines}:
             c.execute("INSERT INTO shipments(order_id,warehouse_id) VALUES(%s,%s)",
                       (order_id, warehouse_id))
         c.execute("""
@@ -369,7 +385,8 @@ def reserve_order(order_id: str, data: ReserveInput,
 @router.post("/orders/{order_id}/cancel", tags=["Orders"])
 def cancel_order(order_id: str, user=Depends(require("admin", "manager"))):
     with pool.connection() as c, c.transaction():
-        order = order_access(c, order_id, user)
+        order_access(c, order_id, user)
+        order = one(c, "SELECT * FROM orders WHERE id=%s FOR UPDATE", (order_id,))
         if order["status"] in ("shipped", "cancelled"):
             error("ORDER_STATE", "Заказ уже закрыт", 409)
         if one(c, "SELECT id FROM shipments WHERE order_id=%s AND status='posted'",
@@ -511,6 +528,11 @@ def confirm_shipment(shipment_id: str,
                      idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
                      user=Depends(require("admin", "picker", "supervisor"))):
     with pool.connection() as c, c.transaction():
+        scope_warehouse = one(c, "SELECT warehouse_id FROM shipments WHERE id=%s",
+                              (shipment_id,))
+        if not scope_warehouse:
+            error("NOT_FOUND", "Отгрузка не найдена", 404)
+        warehouse_access(user, scope_warehouse["warehouse_id"])
         digest, previous = replay(c, "shipment:" + shipment_id, idempotency_key, {})
         if previous is not None:
             return previous
@@ -574,7 +596,12 @@ def create_return(shipment_id: str, data: ReturnInput,
                   idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
                   user=Depends(require("admin", "picker", "supervisor"))):
     with pool.connection() as c, c.transaction():
-        digest, previous = replay(c, "return:" + shipment_id + ":" + idempotency_key,
+        scope_warehouse = one(c, "SELECT warehouse_id FROM shipments WHERE id=%s",
+                              (shipment_id,))
+        if not scope_warehouse:
+            error("NOT_FOUND", "Отгрузка не найдена", 404)
+        warehouse_access(user, scope_warehouse["warehouse_id"])
+        digest, previous = replay(c, "return:" + shipment_id,
                                   idempotency_key, data.model_dump())
         if previous is not None:
             return previous
@@ -610,7 +637,7 @@ def create_return(shipment_id: str, data: ReturnInput,
         result = {"id": str(record["id"]), "qty": data.qty, "shipmentId": shipment_id}
         audit(c, user["id"], "return.post", "return", record["id"],
               after=result, warehouse=res["warehouse_id"])
-        save_replay(c, "return:" + shipment_id + ":" + idempotency_key,
+        save_replay(c, "return:" + shipment_id,
                     idempotency_key, digest, result, 201)
         return result
 
