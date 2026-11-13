@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from app.auth import hash_password
 from app.db import one, pool
 from app.jobs import expire_once
-from app.main import app
+from app.main import app, _rate_buckets, _rate_lock
 
 
 @pytest.fixture(scope="session")
@@ -53,6 +53,9 @@ def env(client):
                   role, role))
             c.execute("INSERT INTO user_warehouses(user_id,warehouse_id) VALUES(%s,%s)",
                       (user_id, wh))
+    # Each case starts with a fresh client-rate window; throttling is tested separately.
+    with _rate_lock:
+        _rate_buckets.clear()
     tokens = {}
     for role in ("admin", "manager", "picker", "supervisor", "director"):
         r = client.post("/api/v1/auth/login", json={
