@@ -338,3 +338,21 @@ def test_fefo_avoids_expired_batches(env):
         """, (oid,)).fetchall()
         assert len(allocations) == 1
         assert str(allocations[0]["lot_id"]) == str(newlot)
+
+
+def test_csv_export_and_movement_filters_respect_warehouse_scope(env):
+    client, users, ids = env
+    receipt(env, 4)
+    csv_products = client.get("/api/v1/export/products.csv", headers=users["manager"])
+    assert csv_products.status_code == 200, csv_products.text
+    assert "SKU-001" in csv_products.text
+    csv_stocks = client.get("/api/v1/export/stocks.csv", headers=users["manager"])
+    assert csv_stocks.status_code == 200, csv_stocks.text
+    assert "SKU-001" in csv_stocks.text
+    movements = client.get("/api/v1/movements?sku=SKU-001&warehouseId=" + ids["warehouse"],
+                           headers=users["manager"])
+    assert movements.status_code == 200, movements.text
+    assert movements.json()["total"] == 1
+    unauthorized = client.get("/api/v1/export/stocks.csv?warehouseId=" + str(uuid4()),
+                              headers=users["manager"])
+    assert unauthorized.status_code == 403, unauthorized.text
