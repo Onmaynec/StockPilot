@@ -12,52 +12,57 @@ from app.jobs import expire_once
 from app.main import app
 
 
+@pytest.fixture(scope="session")
+def client():
+    with TestClient(app) as app_client:
+        yield app_client
+
+
 @pytest.fixture
-def env():
-    with TestClient(app) as client:
-        with pool.connection() as c:
-            c.execute("""
-              TRUNCATE TABLE audit_events, outbox_events, idempotency_records,
-                return_lines, shipments, pick_tasks, reservations, order_lines, orders,
-                inventory_lines, inventory_counts, transfers, receipt_lines, receipts,
-                stock_blocks, stock_movements, stock_guards, lots, products, bins,
-                zones, user_warehouses, warehouses, suppliers, customers, users
-              RESTART IDENTITY CASCADE
-            """)
-            wh = str(uuid4())
-            zone = str(uuid4())
-            bin_id = str(uuid4())
-            product = str(uuid4())
-            lot = str(uuid4())
-            c.execute("INSERT INTO warehouses(id,code,name) VALUES(%s,'W1','Тестовый склад')", (wh,))
-            c.execute("INSERT INTO zones(id,warehouse_id,code,name) VALUES(%s,%s,'A','Зона')", (zone, wh))
-            c.execute("INSERT INTO bins(id,warehouse_id,zone_id,code) VALUES(%s,%s,%s,'A-01')",
-                      (bin_id, wh, zone))
-            c.execute("""
-              INSERT INTO products(id,sku,name,unit,barcode,pick_policy)
-              VALUES(%s,'SKU-001','Тестовый товар','шт','TEST-BARCODE','FEFO')
-            """, (product,))
-            c.execute("INSERT INTO lots(id,product_id,code,expires_at) VALUES(%s,%s,'L1',CURRENT_DATE+60)",
-                      (lot, product))
-            for role in ("admin", "manager", "picker", "supervisor", "director"):
-                user_id = str(uuid4())
-                c.execute("""
-                  INSERT INTO users(id,email,password_hash,role,full_name)
-                  VALUES(%s,%s,%s,%s,%s)
-                """, (user_id, role + "@test.local", hash_password("test-password!"),
-                      role, role))
-                c.execute("INSERT INTO user_warehouses(user_id,warehouse_id) VALUES(%s,%s)",
-                          (user_id, wh))
-        tokens = {}
+def env(client):
+    with pool.connection() as c:
+        c.execute("""
+          TRUNCATE TABLE audit_events, outbox_events, idempotency_records,
+            return_lines, shipments, pick_tasks, reservations, order_lines, orders,
+            inventory_lines, inventory_counts, transfers, receipt_lines, receipts,
+            stock_blocks, stock_movements, stock_guards, lots, products, bins,
+            zones, user_warehouses, warehouses, suppliers, customers, users
+          RESTART IDENTITY CASCADE
+        """)
+        wh = str(uuid4())
+        zone = str(uuid4())
+        bin_id = str(uuid4())
+        product = str(uuid4())
+        lot = str(uuid4())
+        c.execute("INSERT INTO warehouses(id,code,name) VALUES(%s,'W1','Тестовый склад')", (wh,))
+        c.execute("INSERT INTO zones(id,warehouse_id,code,name) VALUES(%s,%s,'A','Зона')", (zone, wh))
+        c.execute("INSERT INTO bins(id,warehouse_id,zone_id,code) VALUES(%s,%s,%s,'A-01')",
+                  (bin_id, wh, zone))
+        c.execute("""
+          INSERT INTO products(id,sku,name,unit,barcode,pick_policy)
+          VALUES(%s,'SKU-001','Тестовый товар','шт','TEST-BARCODE','FEFO')
+        """, (product,))
+        c.execute("INSERT INTO lots(id,product_id,code,expires_at) VALUES(%s,%s,'L1',CURRENT_DATE+60)",
+                  (lot, product))
         for role in ("admin", "manager", "picker", "supervisor", "director"):
-            r = client.post("/api/v1/auth/login", json={
-                "email": role + "@test.local", "password": "test-password!"
-            })
-            assert r.status_code == 200, r.text
-            tokens[role] = {"Authorization": "Bearer " + r.json()["accessToken"]}
-        yield client, tokens, {
-            "warehouse": wh, "zone": zone, "bin": bin_id, "product": product, "lot": lot,
-        }
+            user_id = str(uuid4())
+            c.execute("""
+              INSERT INTO users(id,email,password_hash,role,full_name)
+              VALUES(%s,%s,%s,%s,%s)
+            """, (user_id, role + "@test.local", hash_password("test-password!"),
+                  role, role))
+            c.execute("INSERT INTO user_warehouses(user_id,warehouse_id) VALUES(%s,%s)",
+                      (user_id, wh))
+    tokens = {}
+    for role in ("admin", "manager", "picker", "supervisor", "director"):
+        r = client.post("/api/v1/auth/login", json={
+            "email": role + "@test.local", "password": "test-password!"
+        })
+        assert r.status_code == 200, r.text
+        tokens[role] = {"Authorization": "Bearer " + r.json()["accessToken"]}
+    yield client, tokens, {
+        "warehouse": wh, "zone": zone, "bin": bin_id, "product": product, "lot": lot,
+    }
 
 
 def receipt(env, qty, actual=None):
