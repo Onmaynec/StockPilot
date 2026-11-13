@@ -1,0 +1,36 @@
+# Эксплуатация и восстановление
+
+## Резервное копирование
+
+~~~bash
+mkdir -p backups
+bash scripts/backup.sh backups/stockpilot.dump
+~~~
+
+Используется pg_dump -Fc внутри контейнера PostgreSQL. Бэкапы могут содержать персональные данные, не добавляйте их в Git. В production нужны внешнее зашифрованное хранилище, ежедневное расписание и ротация.
+
+## Восстановление
+
+**Осторожно: заменяет данные в целевой БД!** Перед началом создайте дополнительную копию.
+
+~~~bash
+docker compose stop api worker
+bash scripts/restore.sh backups/stockpilot.dump
+docker compose up -d api worker
+~~~
+
+Проверьте /health/ready, число stock_movements и audit_events, а также доступные остатки. Время RTO 30 минут **не измерялось и не заявляется как достигнутое**.
+
+## Миграции
+
+backend/migrations/001_init.sql применяется entrypoint PostgreSQL при первом запуске с пустым томом. При повторном старте на существующем томе SQL не выполняется. Следующие миграции должны быть отдельными последовательными файлами; сброс тома не является допустимой процедурой обновления рабочей БД.
+
+## Логи и диагностика
+
+~~~bash
+docker compose ps
+docker compose logs -f api worker
+docker compose exec db pg_isready -U stockpilot -d stockpilot
+~~~
+
+API ведёт JSON-строки логов с requestId, маршрутом и длительностью, экспортирует /metrics в приватной сети контейнеров. При публикации метрик требуется отдельная авторизация.

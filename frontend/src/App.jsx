@@ -1,0 +1,666 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Activity, ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Barcode, Boxes, Check,
+  ChevronDown, ChevronRight, ClipboardCheck, ClipboardList, FileSpreadsheet,
+  LayoutDashboard, LogOut, Menu, Package, Plus, RefreshCw, ScanLine,
+  Search, ShieldCheck, Truck, Warehouse, X
+} from 'lucide-react';
+
+const NAV = [
+  { id: 'dashboard', label: 'Обзор', icon: LayoutDashboard },
+  { id: 'stocks', label: 'Остатки', icon: Boxes },
+  { id: 'products', label: 'Номенклатура', icon: Package },
+  { id: 'receipts', label: 'Поступления', icon: ArrowDownLeft },
+  { id: 'orders', label: 'Заказы', icon: ClipboardList },
+  { id: 'picks', label: 'Задания отбора', icon: ScanLine },
+  { id: 'shipments', label: 'Отгрузки', icon: Truck },
+  { id: 'transfers', label: 'Перемещения', icon: ArrowLeftRight },
+  { id: 'inventory', label: 'Инвентаризации', icon: ClipboardCheck },
+  { id: 'audit', label: 'Журнал аудита', icon: ShieldCheck },
+  { id: 'import', label: 'Импорт CSV', icon: FileSpreadsheet },
+];
+const LABELS = {
+  draft: 'Черновик', posted: 'Проведён', confirmed: 'Подтверждён',
+  picking: 'В сборке', picked: 'Собран', shipped: 'Отгружен',
+  cancelled: 'Отменён', pending: 'Ожидает', shortage_pending: 'Недобор',
+  completed: 'Завершён', accepted: 'Согласован', counting: 'Пересчёт',
+  submitted: 'На согласовании', approved: 'Утверждён',
+};
+const ROLE_LABELS = {
+  admin: 'Администратор', manager: 'Менеджер',
+  picker: 'Кладовщик', supervisor: 'Старший смены', director: 'Руководитель'
+};
+const idKey = () => (typeof crypto !== 'undefined' && crypto.randomUUID
+  ? crypto.randomUUID() : 'req_' + Date.now() + '_' + Math.random());
+const short = value => String(value || '—').slice(0, 8);
+const date = value => value ? new Date(value).toLocaleString('ru-RU') : '—';
+const quantity = value => Number(value || 0).toLocaleString('ru-RU');
+
+async function api(method, path, body, idempotent = false) {
+  const token = sessionStorage.getItem('stockpilot_token');
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers.Authorization = 'Bearer ' + token;
+  if (idempotent) headers['Idempotency-Key'] = idKey();
+  let response;
+  try {
+    response = await fetch('/api/v1' + path, {
+      method, headers, body: body === undefined ? undefined : JSON.stringify(body)
+    });
+  } catch {
+    throw new Error('Нет соединения с сервером. Данные не отправлены.');
+  }
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = payload.details;
+    const suffix = detail && detail.available !== undefined
+      ? ' (доступно: ' + detail.available + ')' : '';
+    throw new Error((payload.message || 'Ошибка операции') + suffix);
+  }
+  return payload;
+}
+
+function Pill({ status }) {
+  const good = ['posted', 'shipped', 'completed', 'accepted', 'approved'];
+  const bad = ['cancelled', 'shortage_pending', 'expired'];
+  const tone = good.includes(status) ? 'success' : bad.includes(status) ? 'danger' : 'neutral';
+  return <span className={'status ' + tone}><span className="status-dot" />{LABELS[status] || status}</span>;
+}
+function Empty({ message = 'Записей пока нет', action }) {
+  return <div className="empty"><Boxes size={32} strokeWidth={1.4} /><strong>{message}</strong>
+    <span>Информация появится после проведения первой операции.</span>{action}</div>;
+}
+function Btn({ children, icon: Icon, onClick, variant = 'secondary', disabled, type = 'button' }) {
+  return <button type={type} className={'btn ' + variant} onClick={onClick} disabled={disabled}>
+    {Icon && <Icon size={16} />}{children}</button>;
+}
+function Stat({ label, value, hint, icon: Icon, emphasis }) {
+  return <div className={'stat ' + (emphasis ? 'stat-emphasis' : '')}>
+    <div className="stat-head"><span>{label}</span><Icon size={20} /></div>
+    <div className="stat-value">{value}</div><div className="stat-hint">{hint}</div>
+  </div>;
+}
+function SectionHeader({ title, subtitle, children }) {
+  return <div className="section-header"><div><h2>{title}</h2><p>{subtitle}</p></div>
+    <div className="header-actions">{children}</div></div>;
+}
+
+function PickCard({ task, onConfirm, busy }) {
+  const key = 'stockpilot_pick_' + task.id;
+  const initial = () => {
+    try { return JSON.parse(localStorage.getItem(key) || '{}'); } catch { return {}; }
+  };
+  const [barcode, setBarcode] = useState(() => initial().barcode || '');
+  const [actual, setActual] = useState(() => initial().actual ?? task.expected_qty);
+  const [camera, setCamera] = useState(false);
+  const video = useRef(null);
+  const stream = useRef(null);
+  const timer = useRef(null);
+  useEffect(() => {
+    localStorage.setItem(key, JSON.stringify({ barcode, actual }));
+  }, [barcode, actual]);
+  const stop = () => {
+    clearInterval(timer.current);
+    if (stream.current) stream.current.getTracks().forEach(track => track.stop());
+    stream.current = null;
+    setCamera(false);
+  };
+  useEffect(() => () => {
+    clearInterval(timer.current);
+    if (stream.current) stream.current.getTracks().forEach(track => track.stop());
+  }, []);
+  async function scan() {
+    if (camera) { stop(); return; }
+    try {
+      if (!('BarcodeDetector' in window)) throw new Error('Автосканирование недоступно в браузере');
+      const media = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      stream.current = media;
+      setCamera(true);
+      const detector = new window.BarcodeDetector();
+      setTimeout(() => {
+        if (video.current && stream.current) {
+          video.current.srcObject = media;
+          video.current.play().catch(() => {});
+        }
+      }, 0);
+      timer.current = setInterval(async () => {
+        if (!video.current || !stream.current) return;
+        try {
+          const codes = await detector.detect(video.current);
+          if (codes[0]?.rawValue) { setBarcode(codes[0].rawValue); stop(); }
+        } catch { /* camera may be initializing */ }
+      }, 500);
+    } catch (err) {
+      alert(err.message + '. Введите штрихкод вручную.');
+      stop();
+    }
+  }
+  const active = task.status === 'pending';
+  return <article className="pick-card">
+    <div className="pick-top"><span className="eyebrow">{task.bin_code} / {short(task.warehouse_id)}</span>
+      <Pill status={task.status} /></div>
+    <div className="pick-title">{task.name}</div>
+    <div className="pick-sku">{task.sku} <span>· {task.customer}</span></div>
+    <div className="pick-qty"><strong>{task.expected_qty}</strong><span>ед. к отбору</span></div>
+    {active ? <>
+      <label className="field"><span>Штрихкод / SKU</span><div className="input-with-icon">
+        <Barcode size={17} /><input placeholder="Сканируйте или введите" value={barcode}
+          onChange={e => setBarcode(e.target.value)} /></div></label>
+      <div className="inline-fields"><label className="field"><span>Фактически отобрано</span>
+        <input type="number" min="0" max={task.expected_qty} value={actual}
+          onChange={e => setActual(e.target.value)} /></label>
+        <Btn icon={ScanLine} onClick={scan}>{camera ? 'Закрыть' : 'Камера'}</Btn></div>
+      {camera && <video ref={video} className="scanner-preview" autoPlay playsInline muted />}
+      <Btn variant="primary" icon={Check} disabled={busy || !barcode.trim() || actual === ''}
+        onClick={async () => {
+          const ok = await onConfirm(task.id, barcode.trim(), Number(actual));
+          if (ok) localStorage.removeItem(key);
+        }}>Подтвердить отбор</Btn>
+    </> : <p className="helper">Факт: {task.actual_qty ?? '—'} из {task.expected_qty}.
+      {task.status === 'shortage_pending' ? ' Требуется решение старшего смены.' : ''}</p>}
+  </article>;
+}
+
+function Login({ onLogin, busy, message }) {
+  const [email, setEmail] = useState('admin@stockpilot.local');
+  const [password, setPassword] = useState('');
+  return <div className="login-shell">
+    <div className="login-art"><div className="logo huge"><span className="logo-mark"><Boxes size={28} /></span>
+      <span>stockpilot<span className="logo-period">.</span></span></div>
+      <div className="login-art-bottom"><span className="eyebrow">WAREHOUSE OPERATIONS / 01</span>
+        <h1>Контроль каждого<br />движения.</h1>
+        <p>Один источник данных для склада, менеджеров и руководства.</p>
+        <div className="fine-line" /></div></div>
+    <div className="login-panel"><div className="login-form">
+      <span className="eyebrow accent">ДОБРО ПОЖАЛОВАТЬ</span>
+      <h2>Войти в систему</h2><p>Введите учётные данные, предоставленные администратором.</p>
+      <form onSubmit={e => { e.preventDefault(); onLogin(email, password); }}>
+        <label className="field"><span>Электронная почта</span>
+          <input type="email" autoComplete="username" value={email}
+            onChange={e => setEmail(e.target.value)} required /></label>
+        <label className="field"><span>Пароль</span><input type="password"
+          autoComplete="current-password" value={password}
+          onChange={e => setPassword(e.target.value)} required /></label>
+        {message && <div className="error-note">{message}</div>}
+        <Btn type="submit" variant="primary" disabled={busy}>Войти <ChevronRight size={16} /></Btn>
+      </form><div className="login-footer">StockPilot WMS / защищённый вход</div>
+    </div></div>
+  </div>;
+}
+
+export default function App() {
+  const [token, setToken] = useState(() => sessionStorage.getItem('stockpilot_token'));
+  const [user, setUser] = useState(null);
+  const [screen, setScreen] = useState('dashboard');
+  const [navOpen, setNavOpen] = useState(false);
+  const [rows, setRows] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [dashboard, setDashboard] = useState({});
+  const [warehouses, setWarehouses] = useState([]);
+  const [warehouseId, setWarehouseId] = useState('');
+  const [search, setSearch] = useState('');
+  const [appliedSearch, setAppliedSearch] = useState('');
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState('');
+  const [modal, setModal] = useState(null);
+  const [form, setForm] = useState({});
+  const [productOptions, setProductOptions] = useState([]);
+  const [binOptions, setBinOptions] = useState([]);
+  const [lotOptions, setLotOptions] = useState([]);
+  const [zoneOptions, setZoneOptions] = useState([]);
+  const [detail, setDetail] = useState(null);
+
+  const current = NAV.find(item => item.id === screen) || NAV[0];
+  const isAdmin = user?.role === 'admin';
+  const canWrite = !['director'].includes(user?.role);
+  const canManage = ['admin', 'manager'].includes(user?.role);
+  const canCount = ['admin', 'supervisor'].includes(user?.role);
+  const canOperate = ['admin', 'picker', 'supervisor'].includes(user?.role);
+
+  function alertMessage(message) {
+    setNotice(message);
+    setTimeout(() => setNotice(''), 6000);
+  }
+  async function login(email, password) {
+    setBusy(true);
+    try {
+      const response = await api('POST', '/auth/login', { email, password });
+      sessionStorage.setItem('stockpilot_token', response.accessToken);
+      setToken(response.accessToken);
+      setNotice('');
+    } catch (e) { alertMessage(e.message); }
+    finally { setBusy(false); }
+  }
+  function logout() {
+    sessionStorage.removeItem('stockpilot_token');
+    setToken(null); setUser(null); setModal(null);
+  }
+  useEffect(() => {
+    if (!token) return;
+    Promise.all([api('GET', '/auth/me'), api('GET', '/warehouses')])
+      .then(([me, wh]) => { setUser(me); setWarehouses(wh); })
+      .catch(e => { alertMessage(e.message); logout(); });
+  }, [token]);
+
+  const query = new URLSearchParams();
+  if (warehouseId) query.set('warehouseId', warehouseId);
+  if (appliedSearch) query.set(screen === 'stocks' ? 'sku' : 'q', appliedSearch);
+  query.set('page', page);
+  const queryStr = query.toString();
+
+  async function reload() {
+    if (!user) return;
+    setLoading(true);
+    try {
+      if (screen === 'dashboard') {
+        const data = await api('GET', '/dashboard');
+        setDashboard(data); setRows([]);
+      } else if (screen === 'import') { setRows([]); }
+      else {
+        const paths = {
+          stocks: '/stocks?' + queryStr,
+          products: '/products?q=' + encodeURIComponent(appliedSearch) + '&page=' + page,
+          receipts: '/receipts', orders: '/orders', picks: '/picks' + (warehouseId ? '?warehouseId=' + warehouseId : ''),
+          shipments: '/shipments', transfers: '/transfers',
+          inventory: '/inventory', audit: '/audit?after=0&limit=100'
+        };
+        if (paths[screen]) {
+          const data = await api('GET', paths[screen]);
+          setRows(Array.isArray(data) ? data : data.items || []);
+          setTotal(data.total || 0);
+        }
+      }
+    } catch (e) { alertMessage(e.message); }
+    finally { setLoading(false); }
+  }
+  useEffect(() => { reload(); }, [screen, user?.id, warehouseId, appliedSearch, page]);
+
+  async function action(method, path, body, idem = false, success = 'Операция выполнена') {
+    setBusy(true);
+    try {
+      const result = await api(method, path, body, idem);
+      alertMessage(success);
+      await reload();
+      return result;
+    } catch (e) { alertMessage(e.message); return null; }
+    finally { setBusy(false); }
+  }
+  async function openForm(type, item = null) {
+    setForm({}); setDetail(null); setModal({ type, item });
+    try {
+      if (['receipt', 'order', 'transfer', 'block'].includes(type)) {
+        const products = await api('GET', '/products?limit=100');
+        setProductOptions(products.items || []);
+      }
+      if (['receipt', 'order', 'transfer', 'block', 'return'].includes(type) && warehouses[0]) {
+        const wh = warehouseId || warehouses[0].id;
+        const bins = await api('GET', '/bins?warehouseId=' + wh);
+        setBinOptions(bins || []);
+      }
+      if (type === 'count' && warehouses[0]) {
+        const wh = warehouseId || warehouses[0].id;
+        setZoneOptions(await api('GET', '/zones?warehouseId=' + wh));
+      }
+      if (type === 'receipt-confirm') {
+        const receipt = await api('GET', '/receipts/' + item.id);
+        setDetail(receipt);
+        setForm({ items: receipt.items.map(line => ({
+          lineId: line.id, actualQty: line.planned_qty, reason: ''
+        })) });
+      }
+      if (type === 'inventory-count') {
+        const count = await api('GET', '/inventory/' + item.id);
+        setDetail(count);
+        setForm({ items: count.items.map(line => ({
+          productId: line.product_id, binId: line.bin_id, lotId: line.lot_id,
+          actualQty: line.actual_qty ?? line.snapshot_qty
+        })) });
+      }
+    } catch (e) { alertMessage(e.message); }
+  }
+  useEffect(() => {
+    if (!form.productId) { setLotOptions([]); return; }
+    api('GET', '/lots?productId=' + form.productId).then(setLotOptions).catch(() => {});
+  }, [form.productId]);
+  useEffect(() => {
+    const wh = form.warehouseId;
+    if (!wh) return;
+    api('GET', '/bins?warehouseId=' + wh).then(setBinOptions).catch(() => {});
+    api('GET', '/zones?warehouseId=' + wh).then(setZoneOptions).catch(() => {});
+  }, [form.warehouseId]);
+
+  const set = (key, value) => setForm(prev => ({ ...prev, [key]: value }));
+  const selectField = (label, key, options, placeholder = 'Выберите значение') =>
+    <label className="field"><span>{label}</span><select required value={form[key] || ''}
+      onChange={e => set(key, e.target.value)}>
+      <option value="">{placeholder}</option>
+      {options.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+    </select></label>;
+  const whField = () => selectField('Склад', 'warehouseId',
+    warehouses.map(w => ({ value: w.id, label: w.code + ' — ' + w.name })));
+  const productField = () => selectField('Товар', 'productId',
+    productOptions.map(p => ({ value: p.id, label: p.sku + ' · ' + p.name })));
+  const binField = (key = 'binId', label = 'Ячейка') => selectField(label, key,
+    binOptions.map(b => ({ value: b.id, label: b.zone_code + ' / ' + b.code })));
+  const lotField = () => selectField('Партия', 'lotId',
+    lotOptions.map(l => ({ value: l.id, label: l.code + (l.expires_at ? ' · ' + l.expires_at : '') })));
+  const inputField = (label, key, type = 'text', required = true, placeholder = '') =>
+    <label className="field"><span>{label}</span><input type={type} required={required}
+      min={type === 'number' ? '0' : undefined} value={form[key] ?? ''}
+      placeholder={placeholder} onChange={e => set(key, e.target.value)} /></label>;
+  const num = key => Number(form[key]);
+
+  async function submitModal(e) {
+    e.preventDefault();
+    const type = modal?.type, item = modal?.item;
+    let result = null;
+    if (type === 'product') result = await action('POST', '/products', {
+      sku: form.sku, name: form.name, barcode: form.barcode || null,
+      category: form.category || 'Общее', pickPolicy: form.pickPolicy || 'FIFO'
+    });
+    if (type === 'receipt') result = await action('POST', '/receipts', { items: [{
+      productId: form.productId, binId: form.binId, lotId: form.lotId, plannedQty: num('qty')
+    }] });
+    if (type === 'order') result = await action('POST', '/orders', {
+      customer: form.customer, items: [{ productId: form.productId,
+        warehouseId: form.warehouseId, qty: num('qty') }]
+    });
+    if (type === 'transfer') result = await action('POST', '/transfers', {
+      productId: form.productId, lotId: form.lotId, fromBinId: form.binId,
+      toBinId: form.toBinId, qty: num('qty')
+    });
+    if (type === 'count') result = await action('POST', '/inventory',
+      { zoneId: form.zoneId });
+    if (type === 'return') result = await action('POST', '/shipments/' + item.id + '/returns', {
+      reservationId: form.reservationId, binId: form.binId, qty: num('qty')
+    }, true);
+    if (type === 'receipt-confirm') result = await action('POST',
+      '/receipts/' + item.id + '/confirm', { items: form.items }, true);
+    if (type === 'inventory-count') result = await action('POST',
+      '/inventory/' + item.id + '/count', { items: form.items });
+    if (result) setModal(null);
+  }
+
+  const go = to => {
+    setScreen(to); setPage(1); setAppliedSearch(''); setSearch(''); setNavOpen(false);
+  };
+
+  if (!token || !user) return <Login onLogin={login} busy={busy} message={notice} />;
+  return <div className="app-shell">
+    {navOpen && <div className="mobile-scrim" onClick={() => setNavOpen(false)} />}
+    <aside className={'sidebar ' + (navOpen ? 'open' : '')}>
+      <div className="brand"><span className="logo-mark"><Boxes size={24} /></span>
+        <span>stockpilot<span className="logo-period">.</span></span>
+        <button className="mobile-close" onClick={() => setNavOpen(false)}><X size={19} /></button></div>
+      <div className="workspace"><div className="workspace-icon"><Warehouse size={18} /></div>
+        <div><strong>NordTrade</strong><small>Складская платформа</small></div><ChevronDown size={15} /></div>
+      <div className="nav-caption">РАБОЧЕЕ ПРОСТРАНСТВО</div>
+      <nav className="side-nav">{NAV.filter(n => {
+        if (user.role === 'director') return ['dashboard', 'audit', 'inventory', 'stocks', 'products'].includes(n.id);
+        if (n.id === 'audit') return ['admin', 'supervisor'].includes(user.role);
+        if (n.id === 'import') return user.role === 'admin';
+        return true;
+      }).map(item => {
+        const Icon = item.icon;
+        return <button key={item.id} className={'nav-entry ' + (screen === item.id ? 'selected' : '')}
+          onClick={() => go(item.id)}><Icon size={19} strokeWidth={1.8} />
+          <span>{item.label}</span>{screen === item.id && <span className="nav-indicator" />}</button>;
+      })}</nav>
+      <div className="sidebar-bottom"><div className="system-status"><span className="live-indicator" />
+        Серверная проверка операций</div><div className="version">STOCKPILOT WMS <span>v0.1.0</span></div></div>
+    </aside>
+
+    <main className="main">
+      <header className="topbar">
+        <button className="hamburger" onClick={() => setNavOpen(true)} aria-label="Открыть меню">
+          <Menu size={22} /></button>
+        <div className="breadcrumbs"><span>StockPilot</span><ChevronRight size={16} /><strong>{current.label}</strong></div>
+        <div className="topbar-right"><span className="environment-tag"><span className="live-indicator" /> LIVE</span>
+          <div className="profile"><div className="avatar">{user.full_name?.slice(0, 1)}</div>
+          <div className="profile-text"><strong>{user.full_name}</strong>
+            <span>{ROLE_LABELS[user.role]}</span></div></div>
+          <button className="icon-btn" title="Выйти" onClick={logout}><LogOut size={18} /></button></div>
+      </header>
+      <div className="page">
+        <div className="page-title"><div><div className="eyebrow">ОПЕРАЦИОННАЯ ПАНЕЛЬ / {current.label.toUpperCase()}</div>
+          <h1>{current.label}</h1><p>{screen === 'dashboard'
+            ? 'Ключевые показатели и события складского контура.'
+            : 'Актуальные данные из транзакционной системы учёта.'}</p></div>
+          <div className="page-actions"><Btn icon={RefreshCw} onClick={reload} disabled={loading}>
+            Обновить</Btn></div></div>
+
+        {screen === 'dashboard' && <>
+          <div className="stats-grid">
+            <Stat icon={ClipboardList} label="Открытые заказы" value={quantity(dashboard.openOrders)}
+              hint="Требуют выполнения" emphasis />
+            <Stat icon={ScanLine} label="Задания в работе" value={quantity(dashboard.pendingPicks)}
+              hint="Ожидают отбора" />
+            <Stat icon={Activity} label="Просроченные резервы" value={quantity(dashboard.overdueReservations)}
+              hint="Требуют обработки worker" />
+            <Stat icon={ArrowDownLeft} label="Зафиксированные недоборы"
+              value={quantity(dashboard.shortages)} hint="За весь период" />
+          </div>
+          <div className="dashboard-grid">
+            <div className="panel feature-panel"><span className="eyebrow accent">РАБОЧИЕ ПРОЦЕССЫ</span>
+              <h2>Вся логистика.<br />В одном окне.</h2>
+              <p>От приёмки до отгрузки: подтверждайте действия, сверяйте остатки и отслеживайте историю операций.</p>
+              <div className="quick-actions"><Btn icon={Plus} variant="primary" onClick={() => openForm('order')}>
+                Создать заказ</Btn><Btn icon={ScanLine} onClick={() => go('picks')}>К заданиям</Btn></div>
+              <div className="feature-lines"><span /><span /><span /></div>
+            </div>
+            <div className="panel attention-panel"><div className="panel-title"><h3>Контроль операций</h3>
+              <span className="tag">СЕГОДНЯ</span></div>
+              <div className="attention-row"><div className="attention-icon"><ScanLine size={20} /></div>
+                <div><strong>Комплектация</strong><span>Среднее время подтверждения</span></div>
+                <strong>{dashboard.averagePickMinutes ?? 0} мин</strong></div>
+              <div className="attention-row"><div className="attention-icon"><ShieldCheck size={20} /></div>
+                <div><strong>Аудит движений</strong><span>Каждая проводка имеет автора и документ</span></div>
+                <Check size={18} className="accent" /></div>
+              <div className="attention-row"><div className="attention-icon"><Warehouse size={20} /></div>
+                <div><strong>Управление складами</strong><span>Доступ определяется сервером</span></div>
+                <strong>{warehouses.length}</strong></div>
+            </div>
+          </div>
+        </>}
+
+        {['stocks', 'products', 'receipts', 'orders', 'picks', 'shipments', 'transfers',
+          'inventory', 'audit'].includes(screen) && <>
+          <div className="panel data-panel">
+            <SectionHeader title={{
+              stocks: 'Доступные остатки', products: 'Каталог товаров',
+              receipts: 'Документы приёмки', orders: 'Клиентские заказы',
+              picks: 'Очередь комплектации', shipments: 'Документы отгрузки',
+              transfers: 'Складские перемещения', inventory: 'Акты пересчёта',
+              audit: 'История изменений'
+            }[screen]} subtitle={{
+              stocks: 'Физический · Резерв · Блокировка · Доступно',
+              products: 'SKU, штрихкоды и политики FIFO / FEFO',
+              receipts: 'План и факт отражаются раздельно',
+              orders: 'Резервы и смена статусов',
+              picks: 'Фактическое количество подтверждается сканированием',
+              shipments: 'Списание и закрытие резерва — одна операция',
+              transfers: 'Двойная проводка в одной SQL-транзакции',
+              inventory: 'Корректировки утверждает другой сотрудник',
+              audit: 'Неизменяемые события с идентификатором запроса'
+            }[screen]}>
+              {screen === 'products' && isAdmin && <Btn variant="primary" icon={Plus}
+                onClick={() => openForm('product')}>Новый SKU</Btn>}
+              {screen === 'receipts' && ['admin', 'manager', 'supervisor'].includes(user.role) &&
+                <Btn variant="primary" icon={Plus} onClick={() => openForm('receipt')}>Новая приёмка</Btn>}
+              {screen === 'orders' && canManage && <Btn variant="primary" icon={Plus}
+                onClick={() => openForm('order')}>Создать заказ</Btn>}
+              {screen === 'transfers' && canOperate && <Btn variant="primary" icon={Plus}
+                onClick={() => openForm('transfer')}>Перемещение</Btn>}
+              {screen === 'inventory' && canCount && <Btn variant="primary" icon={Plus}
+                onClick={() => openForm('count')}>Новый пересчёт</Btn>}
+            </SectionHeader>
+            <div className="filters">
+              {['stocks', 'products'].includes(screen) && <>
+                <div className="search-box"><Search size={18} /><input placeholder="Поиск по SKU или названию"
+                  value={search} onChange={e => setSearch(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && (setPage(1), setAppliedSearch(search))} />
+                  <button onClick={() => { setAppliedSearch(search); setPage(1); }}><ChevronRight size={17} /></button></div>
+              </>}
+              {['stocks', 'picks'].includes(screen) && <select className="warehouse-filter" value={warehouseId}
+                onChange={e => setWarehouseId(e.target.value)}>
+                <option value="">Все склады</option>{warehouses.map(w =>
+                  <option key={w.id} value={w.id}>{w.code} / {w.name}</option>)}</select>}
+              <span className="list-count">{screen === 'products' || screen === 'stocks'
+                ? quantity(total) + ' записей' : rows.length + ' записей'}</span>
+            </div>
+            {screen === 'picks'
+              ? <div className="picks-grid">{rows.length ? rows.map(task =>
+                  <PickCard key={task.id} task={task} busy={busy}
+                    onConfirm={async (id, barcode, actualQty) => {
+                      const result = await action('POST', '/picks/' + id + '/confirm', { barcode, actualQty });
+                      return !!result;
+                    }} />) : <Empty message="Нет заданий для отбора" />}</div>
+              : <div className="table-wrapper"><table><thead><tr>
+                  {({
+                    stocks: ['Товар', 'Склад', 'Физически', 'Резерв', 'Блок', 'Доступно'],
+                    products: ['SKU', 'Наименование', 'Категория', 'Политика', 'Состояние'],
+                    receipts: ['Документ', 'Создан', 'Статус', 'Действия'],
+                    orders: ['Заказ', 'Клиент', 'Создан', 'Статус', 'Действия'],
+                    shipments: ['Отгрузка', 'Заказ', 'Склад', 'Статус', 'Действия'],
+                    transfers: ['Перемещение', 'Количество', 'Статус', 'Действия'],
+                    inventory: ['Акт', 'Зона', 'Дата', 'Статус', 'Действия'],
+                    audit: ['Событие', 'Объект', 'Автор', 'Дата', 'Request ID']
+                  }[screen] || []).map(name => <th key={name}>{name}</th>)}</tr></thead>
+                  <tbody>{rows.map((r, i) => <tr key={r.id || i}>
+                    {screen === 'stocks' && <>
+                      <td><strong>{r.sku}</strong><small>{r.name}</small></td><td>{r.warehouse}</td>
+                      <td>{quantity(r.physical)}</td><td>{quantity(r.reserved)}</td>
+                      <td>{quantity(r.blocked)}</td><td><strong className={r.available <= 0 ? 'negative' : 'positive'}>{quantity(r.available)}</strong></td></>}
+                    {screen === 'products' && <>
+                      <td><strong>{r.sku}</strong><small>{r.barcode || 'Нет штрихкода'}</small></td>
+                      <td>{r.name}</td><td>{r.category}</td><td><span className="tag">{r.pick_policy}</span></td>
+                      <td>{r.active ? <span className="positive">Активен</span> : <span className="negative">Архивный</span>}</td></>}
+                    {screen === 'receipts' && <>
+                      <td><strong>RC-{short(r.id)}</strong></td><td>{date(r.created_at)}</td>
+                      <td><Pill status={r.status} /></td><td>{r.status === 'draft' && canOperate &&
+                        <Btn icon={Check} disabled={busy} onClick={() => openForm('receipt-confirm', r)}>Принять</Btn>}</td></>}
+                    {screen === 'orders' && <>
+                      <td><strong>OR-{short(r.id)}</strong><small>v{r.version}</small></td><td>{r.customer}</td>
+                      <td>{date(r.created_at)}</td><td><Pill status={r.status} /></td>
+                      <td><div className="table-actions">{r.status === 'draft' && canManage &&
+                        <Btn disabled={busy} onClick={() => action('POST', '/orders/' + r.id + '/reserve', { ttlMinutes: 60 }, true, 'Резерв подтверждён')}>Резерв</Btn>}
+                        <Btn onClick={async () => { const d = await api('GET', '/orders/' + r.id); setDetail(d); setModal({ type: 'order-detail', item: r }); }}>Подробнее</Btn></div></td></>}
+                    {screen === 'shipments' && <>
+                      <td><strong>SH-{short(r.id)}</strong></td><td>{short(r.order_id)}</td>
+                      <td>{short(r.warehouse_id)}</td><td><Pill status={r.status} /></td>
+                      <td><div className="table-actions">{r.status === 'draft' && canOperate &&
+                        <Btn disabled={busy} onClick={() => action('POST', '/shipments/' + r.id + '/confirm', {}, true)}>Отгрузить</Btn>}
+                        {r.status === 'posted' && canOperate &&
+                          <Btn onClick={() => openForm('return', r)}>Возврат</Btn>}</div></td></>}
+                    {screen === 'transfers' && <>
+                      <td><strong>TR-{short(r.id)}</strong></td><td>{r.qty}</td><td><Pill status={r.status} /></td>
+                      <td>{r.status === 'draft' && canOperate &&
+                        <Btn disabled={busy} onClick={() => action('POST', '/transfers/' + r.id + '/confirm', {}, true)}>Провести</Btn>}</td></>}
+                    {screen === 'inventory' && <>
+                      <td><strong>IC-{short(r.id)}</strong></td><td>{r.zone_code}</td>
+                      <td>{date(r.created_at)}</td><td><Pill status={r.status} /></td>
+                      <td><div className="table-actions">{r.status === 'counting' && canOperate &&
+                        <Btn onClick={() => openForm('inventory-count', r)}>Внести факт</Btn>}
+                        {r.status === 'counting' && canOperate &&
+                          <Btn disabled={busy} onClick={() => action('POST', '/inventory/' + r.id + '/submit', {})}>Отправить</Btn>}
+                        {r.status === 'submitted' && canCount &&
+                          <Btn disabled={busy} onClick={() => action('POST', '/inventory/' + r.id + '/approve', {})}>Утвердить</Btn>}</div></td></>}
+                    {screen === 'audit' && <>
+                      <td><strong>{r.action}</strong></td><td>{r.entity_type}<small>{short(r.entity_id)}</small></td>
+                      <td>{r.actor || 'Системный процесс'}</td><td>{date(r.created_at)}</td>
+                      <td><code>{short(r.request_id)}</code></td></>}
+                  </tr>)}</tbody></table>
+                {!rows.length && <Empty />}</div>}
+            {['products', 'stocks'].includes(screen) && total > 30 && <div className="pagination">
+              <Btn disabled={page <= 1} onClick={() => setPage(page - 1)}>Назад</Btn><span>Страница {page}</span>
+              <Btn disabled={page * (screen === 'products' ? 30 : 50) >= total}
+                onClick={() => setPage(page + 1)}>Вперёд</Btn></div>}
+          </div>
+        </>}
+
+        {screen === 'import' && <div className="panel import-panel">
+          <FileSpreadsheet size={38} className="accent" /><h2>Импорт номенклатуры из CSV</h2>
+          <p>Проверка дублирующихся SKU и построчных ошибок перед сохранением. Импорт полностью атомарный.</p>
+          <textarea className="csv-input" placeholder={'sku,name,unit,barcode,category,pick_policy\nSKU-00001,Гайка,шт,4600000000001,Метизы,FIFO'}
+            value={form.csv || ''} onChange={e => set('csv', e.target.value)} />
+          <input type="file" accept=".csv,text/csv" onChange={async e => {
+            const file = e.target.files?.[0];
+            if (file) set('csv', await file.text());
+          }} />
+          <div className="quick-actions"><Btn icon={Search} onClick={async () => {
+            const result = await action('POST', '/import/products/preview', { content: form.csv || '' });
+            if (result) setDetail(result);
+          }}>Предпросмотр</Btn><Btn variant="primary" icon={Check} disabled={!detail?.valid}
+            onClick={() => action('POST', '/import/products/commit', { content: form.csv || '' })}>Импортировать</Btn></div>
+          {detail?.errors && <div className="csv-report"><strong>Строк: {detail.count}. Ошибок: {detail.errors.length}</strong>
+            {detail.errors.slice(0, 20).map((err, i) => <div key={i}>Строка {err.row}: {err.message}</div>)}</div>}
+        </div>}
+        <footer className="footer"><span>© StockPilot · Transactional WMS</span>
+          <span>Все складские движения требуют подтверждения сервером</span></footer>
+      </div>
+    </main>
+    {notice && <div className="toast"><Activity size={16} />{notice}<button onClick={() => setNotice('')}><X size={15} /></button></div>}
+    {modal && <div className="modal-backdrop" onMouseDown={e => e.target === e.currentTarget && setModal(null)}>
+      <div className="modal"><div className="modal-header"><div><span className="eyebrow accent">СКЛАДСКАЯ ОПЕРАЦИЯ</span>
+        <h2>{({
+          product: 'Новый товар', receipt: 'Создать приёмку', order: 'Новый заказ',
+          transfer: 'Новое перемещение', count: 'Инвентаризация',
+          return: 'Возврат отгрузки', 'receipt-confirm': 'Подтверждение приёмки',
+          'inventory-count': 'Внести фактический остаток', 'order-detail': 'Детали заказа'
+        }[modal.type])}</h2></div><button className="icon-btn" onClick={() => setModal(null)}><X size={20} /></button></div>
+        {modal.type === 'order-detail' ? <div className="modal-body">
+          <div className="detail-meta">Статус: <Pill status={detail?.order?.status} /></div>
+          <h3>Позиции заказа</h3>{detail?.items?.map(l => <div className="detail-row" key={l.id}>
+            <span>{l.sku} · {l.warehouse}</span><strong>{l.qty} шт.</strong></div>)}
+          <h3>Задания</h3>{detail?.picks?.map(t => <div className="detail-row" key={t.id}>
+            <span>{t.sku} / {t.bin_code}</span><span><Pill status={t.status} /> {t.actual_qty ?? 0}/{t.expected_qty}</span></div>)}
+          <h3>Отгрузки</h3>{detail?.shipments?.map(s => <div className="detail-row" key={s.id}>
+            <span>{short(s.id)}</span><Pill status={s.status} /></div>)}
+        </div> : <form onSubmit={submitModal} className="modal-body">
+          {modal.type === 'product' && <>{inputField('Артикул SKU', 'sku')}
+            {inputField('Название', 'name')}{inputField('Штрихкод', 'barcode', 'text', false)}
+            {inputField('Категория', 'category', 'text', false)}
+            {selectField('Политика отбора', 'pickPolicy', [
+              { value: 'FIFO', label: 'FIFO — по дате прихода' },
+              { value: 'FEFO', label: 'FEFO — по сроку годности' }
+            ])}</>}
+          {['receipt', 'order', 'transfer', 'count'].includes(modal.type) && whField()}
+          {['receipt', 'order', 'transfer'].includes(modal.type) && productField()}
+          {['receipt', 'transfer'].includes(modal.type) && <>{binField()}{lotField()}</>}
+          {modal.type === 'transfer' && binField('toBinId', 'Целевая ячейка')}
+          {['receipt', 'order', 'transfer', 'return'].includes(modal.type) &&
+            inputField('Количество', 'qty', 'number')}
+          {modal.type === 'order' && inputField('Контрагент', 'customer')}
+          {modal.type === 'count' && selectField('Зона пересчёта', 'zoneId',
+            zoneOptions.map(z => ({ value: z.id, label: z.code + ' / ' + z.name })))}
+          {modal.type === 'return' && <>
+            {inputField('UUID резерва из деталей заказа', 'reservationId')}
+            {binField()}</>}
+          {modal.type === 'receipt-confirm' && detail && detail.items.map((item, i) => <div key={item.id} className="count-line">
+            <strong>{item.sku}</strong><small>План: {item.planned_qty}</small>
+            <label className="field"><span>Принято фактически</span><input type="number" min="0"
+              value={form.items?.[i]?.actualQty ?? 0}
+              onChange={e => setForm(prev => ({ ...prev, items: prev.items.map((r, j) =>
+                i === j ? { ...r, actualQty: Number(e.target.value) } : r) }))} /></label>
+            <label className="field"><span>Причина расхождения</span><input
+              value={form.items?.[i]?.reason || ''}
+              onChange={e => setForm(prev => ({ ...prev, items: prev.items.map((r, j) =>
+                i === j ? { ...r, reason: e.target.value } : r) }))} /></label>
+          </div>)}
+          {modal.type === 'inventory-count' && detail && detail.items.map((item, i) =>
+            <div key={item.id} className="count-line"><strong>{item.sku} · {item.bin_code}</strong>
+              <small>Учётный срез: {item.snapshot_qty}</small>
+              <label className="field"><span>Факт</span><input type="number" min="0"
+                value={form.items?.[i]?.actualQty ?? ''}
+                onChange={e => setForm(prev => ({ ...prev, items: prev.items.map((r, j) =>
+                  i === j ? { ...r, actualQty: Number(e.target.value) } : r) }))} /></label>
+            </div>)}
+          <div className="modal-note">Операция будет проверена сервером. Неподтверждённые данные
+            не изменяют складской остаток.</div>
+          <div className="modal-buttons"><Btn onClick={() => setModal(null)}>Отмена</Btn>
+            <Btn variant="primary" type="submit" disabled={busy}><Check size={16} />Сохранить</Btn></div>
+        </form>}</div>
+    </div>}
+  </div>;
+}
