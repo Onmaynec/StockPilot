@@ -382,6 +382,30 @@ export default function App() {
     if (result) setModal(null);
   }
 
+  async function downloadCsv() {
+    const suffix = screen === 'stocks'
+      ? '/export/stocks.csv' + (warehouseId ? '?warehouseId=' + encodeURIComponent(warehouseId) : '')
+      : '/export/products.csv';
+    try {
+      const response = await fetch('/api/v1' + suffix, {
+        headers: { Authorization: 'Bearer ' + sessionStorage.getItem('stockpilot_token') }
+      });
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        throw new Error(result.message || 'Не удалось экспортировать CSV');
+      }
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = screen === 'stocks' ? 'stockpilot-stocks.csv' : 'stockpilot-products.csv';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    } catch (e) { alertMessage(e.message); }
+  }
+
   const go = to => {
     setScreen(to); setPage(1); setAppliedSearch(''); setSearch(''); setNavOpen(false);
   };
@@ -484,6 +508,8 @@ export default function App() {
               inventory: 'Корректировки утверждает другой сотрудник',
               audit: 'Неизменяемые события с идентификатором запроса'
             }[screen]}>
+              {['stocks', 'products'].includes(screen) &&
+                <Btn icon={FileSpreadsheet} onClick={downloadCsv}>Экспорт CSV</Btn>}
               {screen === 'products' && isAdmin && <Btn variant="primary" icon={Plus}
                 onClick={() => openForm('product')}>Новый SKU</Btn>}
               {screen === 'receipts' && ['admin', 'manager', 'supervisor'].includes(user.role) &&
