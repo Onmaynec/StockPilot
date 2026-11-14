@@ -684,3 +684,23 @@ def test_admin_users_list_scoped_and_user_creation_validates_warehouse(env):
         "password":"password-long-enough","warehouseIds":[ids["warehouse"]]
     })
     assert created.status_code == 201,created.text
+
+
+
+def test_catalog_substring_search_and_pg_trgm_indexes(env):
+    client, users, ids = env
+    by_sku = client.get("/api/v1/products?q=KU-00", headers=users["manager"])
+    assert by_sku.status_code == 200
+    assert by_sku.json()["total"] >= 1
+    by_name = client.get("/api/v1/products?q=товар", headers=users["picker"])
+    assert by_name.status_code == 200
+    assert by_name.json()["total"] >= 1
+    by_barcode = client.get("/api/v1/products?q=BARCO", headers=users["manager"])
+    assert by_barcode.status_code == 200
+    assert by_barcode.json()["total"] >= 1
+    with pool.connection() as c:
+        indexed = {row["indexname"] for row in c.execute("""
+          SELECT indexname FROM pg_indexes WHERE schemaname='public' AND tablename='products'
+        """).fetchall()}
+    assert {"idx_products_sku_search","idx_products_name_search",
+            "idx_products_barcode_search"}.issubset(indexed)

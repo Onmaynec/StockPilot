@@ -32,6 +32,7 @@ jobs:
       - run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f backend/migrations/002_sessions.sql
       - run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f backend/migrations/003_inventory.sql
       - run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f backend/migrations/004_rate_limits.sql
+      - run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f backend/migrations/005_catalog_search.sql
       - run: DEMO_PASSWORD=ci_demo_password_123 PYTHONPATH=backend python -m app.seed
       - run: PYTHONPATH=backend pytest -q backend/tests
   frontend:
@@ -56,6 +57,9 @@ jobs:
       - run: curl --fail --silent http://localhost:8080/health/ready
       - name: Seed representative inventory
         run: docker compose exec -T api python -m app.seed
+      - name: Update catalog statistics after bulk demo seed
+        run: |
+          docker compose exec -T db sh -ec 'PGPASSWORD="$POSTGRES_PASSWORD" psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "ANALYZE products;"'
       - name: Verify isolated PostgreSQL backup and restore
         run: STOCKPILOT_VERIFY_RESTORE=1 sh scripts/verify_restore.sh | tee restore-report.json
       - name: Measure 60 authenticated concurrent users
