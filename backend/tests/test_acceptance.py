@@ -893,3 +893,18 @@ def test_picker_assignment_rejects_other_employee_and_foreign_warehouse(env):
     with pool.connection() as c:
         row = one(c,"SELECT status,actual_qty,approved_by FROM pick_tasks WHERE id=%s",(task_id,))
     assert row["status"] == "accepted" and row["actual_qty"] == 1
+
+
+
+def test_shipment_queue_displays_newest_order_first(env):
+    client, users, ids = env
+    receipt(env, 5)
+    old_order = create_order(env, 1)
+    assert reserve(env, old_order).status_code == 200
+    new_order = create_order(env, 1)
+    assert reserve(env, new_order).status_code == 200
+    response = client.get("/api/v1/shipments", headers=users["picker"])
+    assert response.status_code == 200, response.text
+    assert [row["order_id"] for row in response.json()[:2]] == [
+        new_order, old_order
+    ]
