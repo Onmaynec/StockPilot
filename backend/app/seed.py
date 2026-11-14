@@ -15,6 +15,8 @@ def uid(name):
 
 
 def seed():
+    if os.getenv("STOCKPILOT_ENV", "development").strip().lower() == "production":
+        raise RuntimeError("Demo seeding is disabled in production.")
     password = os.getenv("DEMO_PASSWORD")
     if not password or len(password) < 12:
         raise RuntimeError("DEMO_PASSWORD (12+ characters) is required for demo seeding.")
