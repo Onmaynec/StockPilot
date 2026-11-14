@@ -588,7 +588,7 @@ def shipments(user=Depends(require("admin", "manager", "picker", "supervisor")))
           SELECT s.*,o.customer,o.status AS order_status FROM shipments s
           JOIN orders o ON o.id=s.order_id
           WHERE %s OR s.warehouse_id=ANY(%s::uuid[])
-          ORDER BY s.id DESC LIMIT 100
+          ORDER BY o.created_at DESC,s.id DESC LIMIT 100
         """, (user["role"] == "admin", user["warehouses"])))
 
 
