@@ -38,3 +38,6 @@ AT-10 (смешанная производственная нагрузка) и 
 Артефакт `stockpilot-07-disaster-recovery-evidence` содержит `backup-report.json`, `backup-repeat-report.json`, `recovery-report.json`, `restore-report.json`, `load-report.json`, `write-report.json`.
 
 **Интерпретация:** 18 секунд — результат на одноразовой демобазе и подготовленных Docker-образах конкретного CI; **не** гарантия RTO на продакшен-сервере, не проверка внешнего шифрованного хранилища и не независимая сертификация AT-11. AT-11 оставлен открытым.
+
+
+**Итоговый коммит версии:** `637e1baa0c81135c4cfa8f977456d666f86c4d03` (короткий `637e1ba`), [PR #11](https://github.com/Onmaynec/StockPilot/pull/11). После подготовки release notes CI итоговой ветки также прошёл полностью: [#43564326888](https://github.com/Onmaynec/StockPilot/actions/runs/43564326888). Запись GitHub Release публикуется владельцем репозитория отдельно.
