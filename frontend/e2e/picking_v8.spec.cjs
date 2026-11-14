@@ -41,7 +41,8 @@ test('v0.8: supervisor assignment and personal picking queue', async ({ page }) 
   expect(orderResponse.status()).toBe(201);
   const orderId = (await orderResponse.json()).id;
   const reserve = await page.request.post('/api/v1/orders/' + orderId + '/reserve', {
-    headers, data: { ttlMinutes: 60 }
+    headers: { ...headers, 'Idempotency-Key': 'mobile08-reserve-' + orderId },
+    data: { ttlMinutes: 60 }
   });
   expect(reserve.status()).toBe(200);
   await signOut(page);
