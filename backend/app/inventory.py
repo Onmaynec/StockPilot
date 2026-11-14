@@ -38,10 +38,11 @@ def create_count(data: CountCreate, user=Depends(require("admin", "supervisor"))
           WHERE b.zone_id=%s
         """, (data.zoneId,))
         lock_stock(c, [(r["product_id"], r["warehouse_id"]) for r in affected])
+        watermark = one(c, "SELECT COALESCE(MAX(id),0) AS last_id FROM stock_movements")["last_id"]
         record = one(c, """
-          INSERT INTO inventory_counts(zone_id,warehouse_id,created_by)
-          VALUES(%s,%s,%s) RETURNING *
-        """, (data.zoneId, zone["warehouse_id"], user["id"]))
+          INSERT INTO inventory_counts(zone_id,warehouse_id,created_by,snapshot_movement_id)
+          VALUES(%s,%s,%s,%s) RETURNING *
+        """, (data.zoneId, zone["warehouse_id"], user["id"], watermark))
         snapshot = all_rows(c, """
           SELECT m.product_id,m.bin_id,m.lot_id,sum(m.qty)::int AS qty
           FROM stock_movements m JOIN bins b ON b.id=m.bin_id
@@ -57,7 +58,7 @@ def create_count(data: CountCreate, user=Depends(require("admin", "supervisor"))
         audit(c, user["id"], "inventory.create", "inventory", record["id"],
               after={"snapshotLines": len(snapshot)}, warehouse=zone["warehouse_id"])
         return {"id": str(record["id"]), "status": "counting",
-                "snapshotLines": len(snapshot)}
+                "snapshotLines": len(snapshot), "movementWatermark": watermark}
 
 
 @router.get("/inventory", tags=["Inventory"])
@@ -174,13 +175,31 @@ def approve_count(count_id: str, user=Depends(require("admin", "supervisor"))):
           SELECT * FROM inventory_lines WHERE count_id=%s ORDER BY product_id,bin_id,lot_id
         """, (count_id,))
         lock_stock(c, [(line["product_id"], count["warehouse_id"]) for line in lines])
-        # Any change after the frozen snapshot (including a newly arrived lot)
-        # invalidates approval; otherwise a count could erase a legitimate receipt.
+        # IDs detect backdated movements; legacy counts fall back to time.
+        # A second check below catches a new SKU/location not present in the snapshot.
         if one(c, """
           SELECT 1 FROM stock_movements m JOIN bins b ON b.id=m.bin_id
-          WHERE b.zone_id=%s AND m.created_at>%s LIMIT 1
-        """, (count["zone_id"], count["created_at"])):
+          WHERE b.zone_id=%s
+            AND ((%s::bigint IS NOT NULL AND m.id > %s::bigint)
+              OR (%s::bigint IS NULL AND m.created_at > %s))
+          LIMIT 1
+        """, (count["zone_id"], count["snapshot_movement_id"],
+              count["snapshot_movement_id"], count["snapshot_movement_id"],
+              count["created_at"])):
             error("STALE_SNAPSHOT", "После начала пересчёта в зоне были движения", 409)
+        if one(c, """
+          SELECT 1 FROM (
+            SELECT m.product_id,m.bin_id,m.lot_id
+            FROM stock_movements m JOIN bins b ON b.id=m.bin_id
+            WHERE b.zone_id=%s
+            GROUP BY m.product_id,m.bin_id,m.lot_id HAVING SUM(m.qty) <> 0
+          ) current_stock
+          LEFT JOIN inventory_lines l
+            ON l.count_id=%s AND l.product_id=current_stock.product_id
+            AND l.bin_id=current_stock.bin_id AND l.lot_id=current_stock.lot_id
+          WHERE l.id IS NULL LIMIT 1
+        """, (count["zone_id"], count["id"])):
+            error("STALE_SNAPSHOT", "В зоне появилась позиция после среза", 409)
         deltas = []
         for line in lines:
             current = one(c, """
@@ -213,3 +232,56 @@ def approve_count(count_id: str, user=Depends(require("admin", "supervisor"))):
               after=result, warehouse=count["warehouse_id"])
         outbox(c, "inventory.approved", count_id, result)
         return result
+
+
+@router.get("/inventory/{count_id}/variance", tags=["Inventory"])
+def count_variance(count_id: str,
+                   user=Depends(require("admin", "picker", "supervisor", "director"))):
+    """Preview discrepancies before approval, without changing quantities."""
+    with pool.connection() as c:
+        count = require_row(c, "inventory_counts", count_id)
+        warehouse_access(user, count["warehouse_id"])
+        lines = all_rows(c, """
+          SELECT l.id,p.sku,b.code AS bin,lot.code AS lot,
+                 l.snapshot_qty,l.actual_qty,
+                 CASE WHEN l.actual_qty IS NULL THEN NULL
+                      ELSE l.actual_qty-l.snapshot_qty END AS delta
+          FROM inventory_lines l
+          JOIN products p ON p.id=l.product_id
+          JOIN bins b ON b.id=l.bin_id
+          JOIN lots lot ON lot.id=l.lot_id
+          WHERE l.count_id=%s ORDER BY p.sku,b.code,lot.code
+        """, (count_id,))
+        fresh = one(c, """
+          SELECT EXISTS(
+            SELECT 1 FROM stock_movements m JOIN bins b ON b.id=m.bin_id
+            WHERE b.zone_id=%s
+              AND ((%s::bigint IS NOT NULL AND m.id > %s::bigint)
+                OR (%s::bigint IS NULL AND m.created_at > %s))
+          ) AS stale
+        """, (count["zone_id"], count["snapshot_movement_id"],
+              count["snapshot_movement_id"], count["snapshot_movement_id"],
+              count["created_at"]))["stale"]
+        # Same additional check as approval for newly arrived product/lot combinations.
+        unknown = one(c, """
+          SELECT EXISTS(
+            SELECT 1 FROM (
+              SELECT m.product_id,m.bin_id,m.lot_id
+              FROM stock_movements m JOIN bins b ON b.id=m.bin_id
+              WHERE b.zone_id=%s
+              GROUP BY m.product_id,m.bin_id,m.lot_id HAVING SUM(qty)<>0
+            ) current_stock
+            LEFT JOIN inventory_lines l
+              ON l.count_id=%s AND l.product_id=current_stock.product_id
+              AND l.bin_id=current_stock.bin_id AND l.lot_id=current_stock.lot_id
+            WHERE l.id IS NULL
+          ) AS stale
+        """, (count["zone_id"], count_id))["stale"]
+        return {
+            "countId": count_id, "status": count["status"],
+            "staleSnapshot": bool(fresh or unknown),
+            "unentered": sum(line["actual_qty"] is None for line in lines),
+            "discrepancyLines": sum(line["delta"] not in (None, 0) for line in lines),
+            "deltaQty": sum(line["delta"] or 0 for line in lines),
+            "items": clean(lines),
+        }

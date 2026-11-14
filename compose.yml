@@ -27,7 +27,7 @@ services:
       PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
       - ./backend/migrations:/migrations:ro
-    command: ["/bin/sh", "-ec", "psql -v ON_ERROR_STOP=1 -f /migrations/002_sessions.sql"]
+    command: ["/bin/sh", "-ec", "psql -v ON_ERROR_STOP=1 -f /migrations/002_sessions.sql && psql -v ON_ERROR_STOP=1 -f /migrations/003_inventory.sql"]
     networks: [private]
   api:
     build: ./backend

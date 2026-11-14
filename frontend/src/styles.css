@@ -375,3 +375,10 @@ td .positive,td .negative { font-size: 12px; }
   .modal-body { padding: 16px; }
   .modal-buttons .btn { width: 100%; }
 }
+
+/* v0.3.0: inventory discrepancy diagnostics */
+.variance-kpis { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-bottom:20px; }
+.variance-kpis > div { border:1px solid var(--line); padding:14px 12px; border-radius:9px; background:#182732; }
+.variance-kpis span { display:block; font-size:10px; color:var(--muted); margin-bottom:8px; }
+.variance-kpis strong { font-size:20px; color:#e5f3f0; }
+@media(max-width:480px) { .variance-kpis {gap:5px;} .variance-kpis > div {padding:10px 7px;} }

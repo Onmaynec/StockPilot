@@ -30,6 +30,7 @@ jobs:
       - run: ruff check --select E4,E7,E9,F63,F7,F82 backend
       - run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f backend/migrations/001_init.sql
       - run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f backend/migrations/002_sessions.sql
+      - run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f backend/migrations/003_inventory.sql
       - run: DEMO_PASSWORD=ci_demo_password_123 PYTHONPATH=backend python -m app.seed
       - run: PYTHONPATH=backend pytest -q backend/tests
   frontend:
@@ -51,6 +52,24 @@ jobs:
       - run: docker compose up -d --wait --wait-timeout 120
       - run: curl --fail --silent http://localhost:8080/ > /dev/null
       - run: curl --fail --silent http://localhost:8080/health/ready
+      - name: Seed representative inventory
+        run: docker compose exec -T api python -m app.seed
+      - name: Verify isolated PostgreSQL backup and restore
+        run: STOCKPILOT_VERIFY_RESTORE=1 sh scripts/verify_restore.sh | tee restore-report.json
+      - name: Measure 60 authenticated concurrent users
+        run: |
+          docker compose exec -T -e STOCKPILOT_PERF_ALLOW=1 api python -m app.load_profile > load-report.json
+          cat load-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stockpilot-03-operational-evidence
+          path: |
+            restore-report.json
+            load-report.json
+          if-no-files-found: ignore
+      - if: failure()
+        run: docker compose logs --tail=120 api db migrate worker web
       - if: always()
         run: docker compose down -v
 

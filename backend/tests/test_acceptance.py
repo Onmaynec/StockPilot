@@ -453,3 +453,65 @@ def test_returnable_scope_not_visible_cross_warehouse(env):
     forbidden = client.get("/api/v1/shipments/" + shipment_id + "/returnable",
                            headers={"Authorization": "Bearer " + logged.json()["accessToken"]})
     assert forbidden.status_code == 403, forbidden.text
+
+
+def test_inventory_variance_preview_and_backdated_movement(env):
+    client, users, ids = env
+    receipt(env, 10)
+    started = client.post("/api/v1/inventory", headers=users["supervisor"],
+                          json={"zoneId": ids["zone"]})
+    assert started.status_code == 201, started.text
+    count_id = started.json()["id"]
+    assert started.json()["movementWatermark"] >= 1
+    preview = client.get("/api/v1/inventory/" + count_id + "/variance",
+                         headers=users["supervisor"])
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["unentered"] == 1
+    r = client.post("/api/v1/inventory/" + count_id + "/count",
+                    headers=users["supervisor"], json={"items": [{
+                        "productId": ids["product"], "binId": ids["bin"],
+                        "lotId": ids["lot"], "actualQty": 8
+                    }]})
+    assert r.status_code == 200, r.text
+    result = client.get("/api/v1/inventory/" + count_id + "/variance",
+                        headers=users["supervisor"]).json()
+    assert (result["deltaQty"], result["discrepancyLines"],
+            result["staleSnapshot"]) == (-2, 1, False)
+    assert client.post("/api/v1/inventory/" + count_id + "/submit",
+                       headers=users["supervisor"]).status_code == 200
+    with pool.connection() as c:
+        c.execute("""
+          INSERT INTO stock_movements(product_id,warehouse_id,bin_id,lot_id,
+                                      qty,doc_type,doc_id,created_at)
+          VALUES (%s,%s,%s,%s,1,'test-backdated',%s,now()-interval '30 days')
+        """, (ids["product"], ids["warehouse"], ids["bin"], ids["lot"], str(uuid4())))
+    stale = client.get("/api/v1/inventory/" + count_id + "/variance",
+                       headers=users["supervisor"])
+    assert stale.status_code == 200
+    assert stale.json()["staleSnapshot"] is True
+    rejected = client.post("/api/v1/inventory/" + count_id + "/approve",
+                           headers=users["admin"])
+    assert rejected.status_code == 409, rejected.text
+    assert rejected.json()["code"] == "STALE_SNAPSHOT"
+
+
+def test_stock_reconciliation_reports_negative_and_respects_roles(env):
+    client, users, ids = env
+    receipt(env, 3)
+    baseline = client.get("/api/v1/stocks/anomalies", headers=users["supervisor"])
+    assert baseline.status_code == 200, baseline.text
+    assert baseline.json()["total"] == 0
+    assert client.get("/api/v1/stocks/anomalies", headers=users["picker"]).status_code == 403
+    with pool.connection() as c:
+        c.execute("""
+          INSERT INTO stock_movements(product_id,warehouse_id,bin_id,lot_id,qty,doc_type,doc_id)
+          VALUES(%s,%s,%s,%s,-5,'synthetic-anomaly',%s)
+        """, (ids["product"], ids["warehouse"], ids["bin"], ids["lot"], str(uuid4())))
+    report = client.get("/api/v1/stocks/anomalies", headers=users["supervisor"]).json()
+    assert report["total"] == 1
+    row = report["items"][0]
+    assert row["issue"] == "NEGATIVE_PHYSICAL"
+    assert (row["physical"],row["available"]) == (-2,-2)
+    other = str(uuid4())
+    assert client.get("/api/v1/stocks/anomalies?warehouseId=" + other,
+                      headers=users["supervisor"]).status_code == 403
