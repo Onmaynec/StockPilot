@@ -908,3 +908,24 @@ def test_shipment_queue_displays_newest_order_first(env):
     assert [row["order_id"] for row in response.json()[:2]] == [
         new_order, old_order
     ]
+
+
+
+def test_catalog_exact_sku_lookup_prefers_unique_index_without_losing_substring_search(env):
+    client, users, ids = env
+    for sku in ("SKU-0010", "SKU-0011"):
+        created = client.post("/api/v1/products", headers=users["admin"], json={
+            "sku": sku, "name": "Соседний товар " + sku,
+            "category": "Тестовая категория",
+        })
+        assert created.status_code == 201, created.text
+    exact = client.get("/api/v1/products?q=SKU-001", headers=users["manager"])
+    assert exact.status_code == 200, exact.text
+    assert exact.json()["total"] == 1
+    assert [row["sku"] for row in exact.json()["items"]] == ["SKU-001"]
+    partial = client.get("/api/v1/products?q=SKU-00", headers=users["manager"])
+    assert partial.status_code == 200, partial.text
+    assert partial.json()["total"] == 3
+    inactive = client.get("/api/v1/products?q=SKU-001&active=true",
+                          headers=users["manager"])
+    assert inactive.status_code == 200 and inactive.json()["total"] == 1

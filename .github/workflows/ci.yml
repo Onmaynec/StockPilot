@@ -50,6 +50,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: cp .env.example .env
+      - name: Trust loopback only for isolated write-profile source identities
+        run: sed -i 's|^TRUSTED_PROXY_CIDRS=.*|TRUSTED_PROXY_CIDRS=127.0.0.1/32|' .env
       - name: Give the backup container the CI runner's unprivileged UID/GID
         run: |
           sed -i "/^BACKUP_UID=/d; /^BACKUP_GID=/d" .env
@@ -98,21 +100,25 @@ jobs:
           archive="$(find backups -maxdepth 1 -name 'stockpilot-*.dump' | head -n1)"
           STOCKPILOT_RECOVERY_DRILL=1 STOCKPILOT_RECOVERY_ISOLATED=1 \
             sh scripts/recovery_drill.sh "$archive" | tee recovery-report.json
-      - name: Measure 60 authenticated concurrent users
+      - name: Measure 60 authenticated concurrent readers (p95 target 500 ms)
         run: |
-          docker compose exec -T -e STOCKPILOT_PERF_ALLOW=1 api python -m app.load_profile > load-report.json
+          docker compose exec -T -e STOCKPILOT_PERF_ALLOW=1 -e STOCKPILOT_LOAD_P95_LIMIT_MS=500 api python -m app.load_profile > load-report.json
           cat load-report.json
-      - name: Mixed API write rehearsal (20 competing orders, 40 ledger movements)
+      - name: AT-10 mixed write profile (60 users, 350 orders, 3,000 ledger movements)
         run: |
           docker compose exec -T \
             -e STOCKPILOT_WRITE_PROFILE_ALLOW=1 \
             -e STOCKPILOT_WRITE_PROFILE_ISOLATED=1 \
-            -e STOCKPILOT_WRITE_TRANSFERS=20 api python -m app.write_profile > write-report.json
+            -e STOCKPILOT_WRITE_URL=http://127.0.0.1:8000/api/v1 \
+            -e STOCKPILOT_WRITE_ORDERS=350 \
+            -e STOCKPILOT_WRITE_TRANSFERS=1500 \
+            -e STOCKPILOT_WRITE_P95_LIMIT_MS=1500 \
+            api python -m app.write_profile > write-report.json
           cat write-report.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: stockpilot-07-disaster-recovery-evidence
+          name: stockpilot-09-performance-and-recovery-evidence
           path: |
             restore-report.json
             load-report.json
