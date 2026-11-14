@@ -2,22 +2,27 @@ name: Publish StockPilot 0.1.0 and 0.2.0 releases
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/publish-releases.yml'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
+      - name: Check publishing permission
+        env:
+          RELEASE_TOKEN: ${{ secrets.STOCKPILOT_RELEASE_TOKEN }}
+        run: |
+          if [ -z "$RELEASE_TOKEN" ]; then
+            echo "::error::Set STOCKPILOT_RELEASE_TOKEN (Contents: write, Workflows: write) or follow docs/PUBLISH_RELEASES.md"
+            exit 1
+          fi
       - name: Check out release notes and tag targets
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.STOCKPILOT_RELEASE_TOKEN }}
       - name: Create immutable version tags
         run: |
           if ! git ls-remote --tags --exit-code origin refs/tags/v0.1.0 >/dev/null 2>&1; then
@@ -30,7 +35,7 @@ jobs:
           fi
       - name: Publish v0.1.0 from its source commit
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.STOCKPILOT_RELEASE_TOKEN }}
         run: |
           if gh release view v0.1.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "v0.1.0 already exists; leaving it unchanged"
@@ -42,7 +47,7 @@ jobs:
           fi
       - name: Publish v0.2.0 from the verified merge commit
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.STOCKPILOT_RELEASE_TOKEN }}
         run: |
           if gh release view v0.2.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "v0.2.0 already exists; leaving it unchanged"
@@ -55,7 +60,7 @@ jobs:
           fi
       - name: Verify both public releases
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.STOCKPILOT_RELEASE_TOKEN }}
         run: |
           gh release view v0.1.0 --repo "$GITHUB_REPOSITORY" --json tagName,url,isDraft,isPrerelease
           gh release view v0.2.0 --repo "$GITHUB_REPOSITORY" --json tagName,url,isDraft,isPrerelease
