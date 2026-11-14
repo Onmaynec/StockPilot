@@ -30,7 +30,7 @@ async def lifespan(app):
 
 
 app = FastAPI(
-    title="StockPilot WMS", version="0.4.0",
+    title="StockPilot WMS", version="0.6.0",
     description="Transactional multi-warehouse inventory API. Errors include requestId.",
     lifespan=lifespan,
 )

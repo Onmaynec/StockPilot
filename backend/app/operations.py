@@ -106,9 +106,15 @@ def create_receipt(data: ReceiptInput, user=Depends(require("admin", "manager", 
 def receipts(user=Depends(require("admin", "manager", "picker", "supervisor"))):
     with pool.connection() as c:
         rows = all_rows(c, """
-          SELECT DISTINCT r.* FROM receipts r JOIN receipt_lines l ON l.receipt_id=r.id
-          JOIN bins b ON b.id=l.bin_id
-          WHERE %s OR b.warehouse_id=ANY(%s::uuid[])
+          SELECT r.* FROM receipts r
+          WHERE %s OR (
+            EXISTS (SELECT 1 FROM receipt_lines l WHERE l.receipt_id=r.id)
+            AND NOT EXISTS (
+              SELECT 1 FROM receipt_lines l
+              JOIN bins b ON b.id=l.bin_id
+              WHERE l.receipt_id=r.id AND NOT (b.warehouse_id=ANY(%s::uuid[]))
+            )
+          )
           ORDER BY r.created_at DESC LIMIT 100
         """, (user["role"] == "admin", user["warehouses"]))
         return clean(rows)
@@ -204,10 +210,14 @@ def create_transfer(data: TransferInput, user=Depends(require("admin", "picker",
 def transfers(user=Depends(require("admin", "picker", "supervisor"))):
     with pool.connection() as c:
         return clean(all_rows(c, """
-          SELECT t.* FROM transfers t JOIN bins b ON b.id=t.from_bin_id
-          WHERE %s OR b.warehouse_id=ANY(%s::uuid[])
+          SELECT t.* FROM transfers t
+          JOIN bins src ON src.id=t.from_bin_id
+          JOIN bins dst ON dst.id=t.to_bin_id
+          WHERE %s OR (src.warehouse_id=ANY(%s::uuid[])
+                      AND dst.warehouse_id=ANY(%s::uuid[]))
           ORDER BY t.id DESC LIMIT 100
-        """, (user["role"] == "admin", user["warehouses"])))
+        """, (user["role"] == "admin", user["warehouses"],
+              user["warehouses"])))
 
 
 @router.post("/transfers/{transfer_id}/confirm", tags=["Transfers"])

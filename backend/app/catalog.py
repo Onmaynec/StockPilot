@@ -360,23 +360,46 @@ def stocks(sku: str = "", warehouseId: str | None = None,
         warehouse_access(user, warehouseId)
     page, limit = max(1, page), max(1, min(100, limit))
     with pool.connection() as c:
-        guards = all_rows(c, """
-          SELECT sg.product_id,sg.warehouse_id,p.sku,p.name,w.name AS warehouse,
-                 count(*) OVER()::int AS total
-          FROM stock_guards sg
-          JOIN products p ON p.id=sg.product_id
-          JOIN warehouses w ON w.id=sg.warehouse_id
-          WHERE (%s='' OR p.sku ILIKE %s OR p.name ILIKE %s)
-            AND (%s::uuid IS NULL OR sg.warehouse_id=%s::uuid)
-            AND (%s OR sg.warehouse_id=ANY(%s::uuid[]))
-          ORDER BY p.sku,w.code LIMIT %s OFFSET %s
+        # Keep pagination and RBAC in SQL, then aggregate only the selected page.
+        # Previously each row executed an extra stock_total() query (N+1).
+        rows = all_rows(c, """
+          WITH selected AS MATERIALIZED (
+            SELECT sg.product_id,sg.warehouse_id,p.sku,p.name,
+                   w.name AS warehouse,w.code AS warehouse_code,
+                   count(*) OVER()::int AS total
+            FROM stock_guards sg
+            JOIN products p ON p.id=sg.product_id
+            JOIN warehouses w ON w.id=sg.warehouse_id
+            WHERE (%s='' OR p.sku ILIKE %s OR p.name ILIKE %s)
+              AND (%s::uuid IS NULL OR sg.warehouse_id=%s::uuid)
+              AND (%s OR sg.warehouse_id=ANY(%s::uuid[]))
+            ORDER BY p.sku,w.code LIMIT %s OFFSET %s
+          )
+          SELECT s.product_id,s.warehouse_id,s.sku,s.name,s.warehouse,s.total,
+                 COALESCE(m.physical,0)::int AS physical,
+                 COALESCE(r.reserved,0)::int AS reserved,
+                 COALESCE(b.blocked,0)::int AS blocked,
+                 (COALESCE(m.physical,0)-COALESCE(r.reserved,0)-
+                  COALESCE(b.blocked,0))::int AS available
+          FROM selected s
+          LEFT JOIN LATERAL (
+            SELECT SUM(qty) AS physical FROM stock_movements
+            WHERE product_id=s.product_id AND warehouse_id=s.warehouse_id
+          ) m ON TRUE
+          LEFT JOIN LATERAL (
+            SELECT SUM(qty-shipped_qty) AS reserved FROM reservations
+            WHERE product_id=s.product_id AND warehouse_id=s.warehouse_id
+              AND status='active'
+          ) r ON TRUE
+          LEFT JOIN LATERAL (
+            SELECT SUM(qty) AS blocked FROM stock_blocks
+            WHERE product_id=s.product_id AND warehouse_id=s.warehouse_id
+              AND active
+          ) b ON TRUE
+          ORDER BY s.sku,s.warehouse_code
         """, (sku, f"%{sku}%", f"%{sku}%", warehouseId, warehouseId,
               user["role"] == "admin", user["warehouses"], limit, (page - 1) * limit))
-        items = []
-        for row in guards:
-            qty = stock_total(c, row["product_id"], row["warehouse_id"])
-            items.append({**clean(row), **qty, "available": qty["physical"] - qty["reserved"] - qty["blocked"]})
-        return {"items": items, "total": guards[0]["total"] if guards else 0,
+        return {"items": clean(rows), "total": rows[0]["total"] if rows else 0,
                 "page": page, "limit": limit}
 
 
