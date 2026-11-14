@@ -308,6 +308,8 @@ export default function App() {
       if (key?.startsWith('stockpilot_pick_')) sessionStorage.removeItem(key);
     }
     setToken(null); setUser(null); setModal(null);
+    setScreen('dashboard'); setPickFilter('active');
+    setRows([]); setPickAssignees([]); setWarehouseId('');
   }
   useEffect(() => {
     // Clean up unsafely persistent drafts created by older releases.
