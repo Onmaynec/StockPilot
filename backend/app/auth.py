@@ -40,7 +40,8 @@ def issue_token(user):
         raise RuntimeError("JWT_SECRET must have at least 32 characters")
     now = datetime.now(timezone.utc)
     return jwt.encode({
-        "sub": str(user["id"]), "iat": now, "exp": now + timedelta(hours=8),
+        "sub": str(user["id"]), "ver": user["token_version"],
+        "iat": now, "exp": now + timedelta(hours=8),
     }, secret, algorithm="HS256")
 
 
@@ -57,9 +58,9 @@ def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(bear
     except (jwt.PyJWTError, KeyError):
         error("UNAUTHORIZED", "Сессия недействительна", 401)
     with pool.connection() as c:
-        user = one(c, "SELECT id,email,role,full_name,active FROM users WHERE id=%s", (uid,))
-        if not user or not user["active"]:
-            error("UNAUTHORIZED", "Пользователь неактивен", 401)
+        user = one(c, "SELECT id,email,role,full_name,active,token_version FROM users WHERE id=%s", (uid,))
+        if not user or not user["active"] or payload.get("ver") != user["token_version"]:
+            error("UNAUTHORIZED", "Сессия отозвана или пользователь неактивен", 401)
         user["warehouses"] = [
             str(row["warehouse_id"]) for row in c.execute(
                 "SELECT warehouse_id FROM user_warehouses WHERE user_id=%s", (uid,)

@@ -29,6 +29,7 @@ jobs:
       - run: pip install -r backend/requirements-dev.txt
       - run: ruff check --select E4,E7,E9,F63,F7,F82 backend
       - run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f backend/migrations/001_init.sql
+      - run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f backend/migrations/002_sessions.sql
       - run: DEMO_PASSWORD=ci_demo_password_123 PYTHONPATH=backend python -m app.seed
       - run: PYTHONPATH=backend pytest -q backend/tests
   frontend:
@@ -51,4 +52,32 @@ jobs:
       - run: curl --fail --silent http://localhost:8080/ > /dev/null
       - run: curl --fail --silent http://localhost:8080/health/ready
       - if: always()
+        run: docker compose down -v
+
+  e2e:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install web dependencies
+        run: cd frontend && npm install --no-audit --no-fund
+      - name: Install Playwright browsers
+        run: cd frontend && npx playwright install --with-deps chromium firefox
+      - name: Start isolated demo environment
+        run: |
+          cp .env.example .env
+          docker compose up -d --build --wait --wait-timeout 180
+          docker compose exec -T api python -m app.seed
+      - name: Browser E2E - mobile Chromium and desktop Firefox
+        run: cd frontend && npm run test:e2e
+        env:
+          CI: '1'
+          DEMO_PASSWORD: DemoStock2026!
+      - name: Show container logs on failure
+        if: failure()
+        run: docker compose logs --tail=150 api db migrate worker web
+      - name: Clean up test environment
+        if: always()
         run: docker compose down -v

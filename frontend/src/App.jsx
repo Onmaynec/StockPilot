@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { OrderComposer, ReturnComposer, SecurityComposer } from './workflows';
 import {
   Activity, ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Barcode, Boxes, Check,
   ChevronDown, ChevronRight, ClipboardCheck, ClipboardList, FileSpreadsheet,
@@ -84,7 +85,7 @@ function SectionHeader({ title, subtitle, children }) {
     <div className="header-actions">{children}</div></div>;
 }
 
-function PickCard({ task, onConfirm, busy }) {
+function PickCard({ task, onConfirm, onApprove, canConfirm, canApprove, busy }) {
   const key = 'stockpilot_pick_' + task.id;
   const initial = () => {
     try { return JSON.parse(localStorage.getItem(key) || '{}'); } catch { return {}; }
@@ -141,7 +142,7 @@ function PickCard({ task, onConfirm, busy }) {
     <div className="pick-title">{task.name}</div>
     <div className="pick-sku">{task.sku} <span>· {task.customer}</span></div>
     <div className="pick-qty"><strong>{task.expected_qty}</strong><span>ед. к отбору</span></div>
-    {active ? <>
+    {active && canConfirm ? <>
       <label className="field"><span>Штрихкод / SKU</span><div className="input-with-icon">
         <Barcode size={17} /><input placeholder="Сканируйте или введите" value={barcode}
           onChange={e => setBarcode(e.target.value)} /></div></label>
@@ -157,6 +158,9 @@ function PickCard({ task, onConfirm, busy }) {
         }}>Подтвердить отбор</Btn>
     </> : <p className="helper">Факт: {task.actual_qty ?? '—'} из {task.expected_qty}.
       {task.status === 'shortage_pending' ? ' Требуется решение старшего смены.' : ''}</p>}
+    {task.status === 'shortage_pending' && canApprove &&
+      <Btn variant="primary" icon={Check} disabled={busy}
+        onClick={() => onApprove(task.id)}>Согласовать недобор</Btn>}
   </article>;
 }
 
@@ -210,6 +214,7 @@ export default function App() {
   const [lotOptions, setLotOptions] = useState([]);
   const [zoneOptions, setZoneOptions] = useState([]);
   const [detail, setDetail] = useState(null);
+  const [pickFilter, setPickFilter] = useState('active');
 
   const current = NAV.find(item => item.id === screen) || NAV[0];
   const isAdmin = user?.role === 'admin';
@@ -289,11 +294,11 @@ export default function App() {
   async function openForm(type, item = null) {
     setForm({}); setDetail(null); setModal({ type, item });
     try {
-      if (['receipt', 'order', 'transfer', 'block'].includes(type)) {
+      if (['receipt', 'transfer', 'block'].includes(type)) {
         const products = await api('GET', '/products?limit=100');
         setProductOptions(products.items || []);
       }
-      if (['receipt', 'order', 'transfer', 'block', 'return'].includes(type) && warehouses[0]) {
+      if (['receipt', 'transfer', 'block'].includes(type) && warehouses[0]) {
         const wh = warehouseId || warehouses[0].id;
         const bins = await api('GET', '/bins?warehouseId=' + wh);
         setBinOptions(bins || []);
@@ -362,19 +367,12 @@ export default function App() {
     if (type === 'receipt') result = await action('POST', '/receipts', { items: [{
       productId: form.productId, binId: form.binId, lotId: form.lotId, plannedQty: num('qty')
     }] });
-    if (type === 'order') result = await action('POST', '/orders', {
-      customer: form.customer, items: [{ productId: form.productId,
-        warehouseId: form.warehouseId, qty: num('qty') }]
-    });
     if (type === 'transfer') result = await action('POST', '/transfers', {
       productId: form.productId, lotId: form.lotId, fromBinId: form.binId,
       toBinId: form.toBinId, qty: num('qty')
     });
     if (type === 'count') result = await action('POST', '/inventory',
       { zoneId: form.zoneId });
-    if (type === 'return') result = await action('POST', '/shipments/' + item.id + '/returns', {
-      reservationId: form.reservationId, binId: form.binId, qty: num('qty')
-    }, true);
     if (type === 'receipt-confirm') result = await action('POST',
       '/receipts/' + item.id + '/confirm', { items: form.items }, true);
     if (type === 'inventory-count') result = await action('POST',
@@ -432,7 +430,7 @@ export default function App() {
           <span>{item.label}</span>{screen === item.id && <span className="nav-indicator" />}</button>;
       })}</nav>
       <div className="sidebar-bottom"><div className="system-status"><span className="live-indicator" />
-        Серверная проверка операций</div><div className="version">STOCKPILOT WMS <span>v0.1.0</span></div></div>
+        Серверная проверка операций</div><div className="version">STOCKPILOT WMS <span>v0.2.0</span></div></div>
     </aside>
 
     <main className="main">
@@ -444,6 +442,9 @@ export default function App() {
           <div className="profile"><div className="avatar">{user.full_name?.slice(0, 1)}</div>
           <div className="profile-text"><strong>{user.full_name}</strong>
             <span>{ROLE_LABELS[user.role]}</span></div></div>
+          <button className="icon-btn" title="Безопасность учётной записи"
+            aria-label="Безопасность учётной записи"
+            onClick={() => setModal({ type: 'security' })}><ShieldCheck size={18} /></button>
           <button className="icon-btn" title="Выйти" onClick={logout}><LogOut size={18} /></button></div>
       </header>
       <div className="page">
@@ -536,12 +537,35 @@ export default function App() {
                 ? quantity(total) + ' записей' : rows.length + ' записей'}</span>
             </div>
             {screen === 'picks'
-              ? <div className="picks-grid">{rows.length ? rows.map(task =>
-                  <PickCard key={task.id} task={task} busy={busy}
-                    onConfirm={async (id, barcode, actualQty) => {
-                      const result = await action('POST', '/picks/' + id + '/confirm', { barcode, actualQty });
-                      return !!result;
-                    }} />) : <Empty message="Нет заданий для отбора" />}</div>
+              ? <>
+                <div className="pick-filter">
+                  <label htmlFor="pick-status-filter">Показывать задания</label>
+                  <select id="pick-status-filter" value={pickFilter}
+                    onChange={e => setPickFilter(e.target.value)}>
+                    <option value="active">Ожидают / недобор</option>
+                    <option value="all">Все статусы</option>
+                    <option value="completed">Завершённые</option>
+                  </select>
+                </div>
+                <div className="picks-grid">{
+                  rows.filter(task => pickFilter === 'all'
+                    || (pickFilter === 'active' && ['pending', 'shortage_pending'].includes(task.status))
+                    || (pickFilter === 'completed' && ['completed', 'accepted'].includes(task.status))
+                  ).length
+                  ? rows.filter(task => pickFilter === 'all'
+                    || (pickFilter === 'active' && ['pending', 'shortage_pending'].includes(task.status))
+                    || (pickFilter === 'completed' && ['completed', 'accepted'].includes(task.status))
+                  ).map(task =>
+                    <PickCard key={task.id} task={task} busy={busy}
+                      canConfirm={canOperate} canApprove={canCount}
+                      onApprove={id => action('POST', '/picks/' + id + '/approve-shortage', {},
+                        false, 'Недобор согласован')}
+                      onConfirm={async (id, barcode, actualQty) => {
+                        const result = await action('POST', '/picks/' + id + '/confirm', { barcode, actualQty });
+                        return !!result;
+                      }} />)
+                  : <Empty message="Заданий в выбранном статусе нет" />}</div></>
+
               : <div className="table-wrapper"><table><thead><tr>
                   {({
                     stocks: ['Товар', 'Склад', 'Физически', 'Резерв', 'Блок', 'Доступно'],
@@ -633,7 +657,8 @@ export default function App() {
           product: 'Новый товар', receipt: 'Создать приёмку', order: 'Новый заказ',
           transfer: 'Новое перемещение', count: 'Инвентаризация',
           return: 'Возврат отгрузки', 'receipt-confirm': 'Подтверждение приёмки',
-          'inventory-count': 'Внести фактический остаток', 'order-detail': 'Детали заказа'
+          'inventory-count': 'Внести фактический остаток', 'order-detail': 'Детали заказа',
+          security: 'Безопасность учётной записи'
         }[modal.type])}</h2></div><button className="icon-btn" onClick={() => setModal(null)}><X size={20} /></button></div>
         {modal.type === 'order-detail' ? <div className="modal-body">
           <div className="detail-meta">Статус: <Pill status={detail?.order?.status} /></div>
@@ -643,7 +668,33 @@ export default function App() {
             <span>{t.sku} / {t.bin_code}</span><span><Pill status={t.status} /> {t.actual_qty ?? 0}/{t.expected_qty}</span></div>)}
           <h3>Отгрузки</h3>{detail?.shipments?.map(s => <div className="detail-row" key={s.id}>
             <span>{short(s.id)}</span><Pill status={s.status} /></div>)}
-        </div> : <form onSubmit={submitModal} className="modal-body">
+          {canManage && !['shipped','cancelled'].includes(detail?.order?.status) &&
+            <div className="modal-buttons"><Btn disabled={busy} onClick={async () => {
+              if (!window.confirm('Отменить заказ и освободить активные резервы?')) return;
+              const result = await action('POST','/orders/' + detail.order.id + '/cancel', {});
+              if (result) setModal(null);
+            }}>Отменить заказ</Btn></div>}
+        </div> : modal.type === 'order' ?
+          <OrderComposer api={api} warehouses={warehouses} busy={busy}
+            onCreate={async payload => {
+              const result = await action('POST', '/orders', payload);
+              if (result) setModal(null);
+              return result;
+            }} />
+        : modal.type === 'return' ?
+          <ReturnComposer api={api} shipment={modal.item} busy={busy}
+            onCreate={async payload => {
+              const result = await action('POST', '/shipments/' + modal.item.id + '/returns',
+                payload, true, 'Возврат проведён');
+              if (result) setModal(null);
+              return result;
+            }} />
+        : modal.type === 'security' ?
+          <SecurityComposer api={api} busy={busy} onRevoke={message => {
+            logout();
+            alertMessage(message);
+          }} />
+        : <form onSubmit={submitModal} className="modal-body">
           {modal.type === 'product' && <>{inputField('Артикул SKU', 'sku')}
             {inputField('Название', 'name')}{inputField('Штрихкод', 'barcode', 'text', false)}
             {inputField('Категория', 'category', 'text', false)}
@@ -651,18 +702,16 @@ export default function App() {
               { value: 'FIFO', label: 'FIFO — по дате прихода' },
               { value: 'FEFO', label: 'FEFO — по сроку годности' }
             ])}</>}
-          {['receipt', 'order', 'transfer', 'count'].includes(modal.type) && whField()}
-          {['receipt', 'order', 'transfer'].includes(modal.type) && productField()}
+          {['receipt', 'transfer', 'count'].includes(modal.type) && whField()}
+          {['receipt', 'transfer'].includes(modal.type) && productField()}
           {['receipt', 'transfer'].includes(modal.type) && <>{binField()}{lotField()}</>}
           {modal.type === 'transfer' && binField('toBinId', 'Целевая ячейка')}
-          {['receipt', 'order', 'transfer', 'return'].includes(modal.type) &&
+          {['receipt', 'transfer'].includes(modal.type) &&
             inputField('Количество', 'qty', 'number')}
-          {modal.type === 'order' && inputField('Контрагент', 'customer')}
+
           {modal.type === 'count' && selectField('Зона пересчёта', 'zoneId',
             zoneOptions.map(z => ({ value: z.id, label: z.code + ' / ' + z.name })))}
-          {modal.type === 'return' && <>
-            {inputField('UUID резерва из деталей заказа', 'reservationId')}
-            {binField()}</>}
+
           {modal.type === 'receipt-confirm' && detail && detail.items.map((item, i) => <div key={item.id} className="count-line">
             <strong>{item.sku}</strong><small>План: {item.planned_qty}</small>
             <label className="field"><span>Принято фактически</span><input type="number" min="0"
