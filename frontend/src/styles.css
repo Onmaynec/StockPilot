@@ -445,3 +445,29 @@ td .positive,td .negative { font-size: 12px; }
   .admin-record-main {flex-wrap:wrap;}
   .admin-check {width:100%;}
 }
+
+
+/* v0.8.0 — mobile-first picking and assignment workspace */
+.pick-context { color: #91a8b6; margin-top: 10px; font-size: 11px;
+  line-height: 1.6; overflow-wrap: anywhere; }
+.pick-filter-hint { color: #9bb0b9; font-size: 11px; max-width: 360px; }
+.pick-card-short { border-color: #a57848; }
+.pick-shortage-warning { background: #3a3021; border: 1px solid #aa8045;
+  color: #ffdca2; font-size: 12px; line-height: 1.5; padding: 12px;
+  border-radius: 9px; margin: 8px 0 13px; }
+.pick-scan-error { background: #3b2228; color: #ffb8b2; border: 1px solid #9b4752;
+  font-size: 12px; border-radius: 8px; padding: 11px; line-height: 1.5;
+  margin: 8px 0 13px; }
+.pick-card .field select { min-height: 42px; }
+.pick-card input[type="number"] { min-height: 44px; font-size: 16px; }
+.pick-card input[aria-label^="Штрихкод"] { min-height: 46px; font-size: 16px; }
+.pick-card .btn.primary { min-height: 45px; font-size: 12px; }
+@media (max-width: 600px) {
+  .pick-card { padding: 15px; }
+  .pick-title { margin-top: 14px; font-size: 16px; }
+  .pick-qty { margin: 13px 0; }
+  .pick-card .inline-fields { flex-wrap: wrap; }
+  .pick-card .inline-fields > .btn { margin-bottom: 12px; min-height: 44px; }
+  .pick-filter { align-items: flex-start; flex-wrap: wrap; }
+  .pick-filter-hint { display: block; width: 100%; }
+}

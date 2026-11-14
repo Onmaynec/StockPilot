@@ -812,3 +812,84 @@ def test_mixed_warehouse_documents_hidden_from_partial_scope(env):
     assert transfer_id not in {r["id"] for r in picker_transfers.json()}
     admin_transfers = client.get("/api/v1/transfers",headers=users["admin"])
     assert transfer_id in {r["id"] for r in admin_transfers.json()}
+
+
+
+def test_pick_queue_my_assignments_and_supervisor_assignees_scope(env):
+    client, users, ids = env
+    receipt(env, 6)
+    first = create_order(env, 2)
+    second = create_order(env, 1)
+    assert reserve(env, first).status_code == 200
+    assert reserve(env, second).status_code == 200
+    first_task = client.get("/api/v1/orders/" + first, headers=users["manager"]).json()["picks"][0]["id"]
+    second_task = client.get("/api/v1/orders/" + second, headers=users["manager"]).json()["picks"][0]["id"]
+    assert client.get("/api/v1/picks/assignees", headers=users["picker"]).status_code == 403
+    available = client.get("/api/v1/picks/assignees?warehouseId=" + ids["warehouse"],
+                           headers=users["supervisor"])
+    assert available.status_code == 200, available.text
+    with pool.connection() as c:
+        picker_id = one(c, "SELECT id FROM users WHERE email='picker@test.local'")["id"]
+    assert any(str(x["id"]) == str(picker_id) for x in available.json())
+    assert all(set(x["warehouse_ids"]) <= {ids["warehouse"]} for x in available.json())
+    assigned = client.post(f"/api/v1/picks/{first_task}/assign",
+                           headers=users["supervisor"], json={"userId": str(picker_id)})
+    assert assigned.status_code == 200, assigned.text
+    mine = client.get("/api/v1/picks?assignedToMe=true", headers=users["picker"])
+    assert mine.status_code == 200, mine.text
+    assert {x["id"] for x in mine.json()} == {first_task}
+    all_tasks = client.get("/api/v1/picks", headers=users["picker"])
+    assert {first_task, second_task} <= {x["id"] for x in all_tasks.json()}
+    denied = client.post(f"/api/v1/picks/{first_task}/assign",
+                         headers=users["picker"], json={"userId": str(picker_id)})
+    assert denied.status_code == 403
+    confirmed = client.post(f"/api/v1/picks/{first_task}/confirm",
+                            headers=users["picker"],
+                            json={"barcode": "TEST-BARCODE", "actualQty": 2})
+    assert confirmed.status_code == 200, confirmed.text
+
+
+def test_picker_assignment_rejects_other_employee_and_foreign_warehouse(env):
+    client, users, ids = env
+    receipt(env, 4)
+    order = create_order(env, 2)
+    assert reserve(env, order).status_code == 200
+    task_id = client.get("/api/v1/orders/" + order, headers=users["manager"]).json()["picks"][0]["id"]
+    with pool.connection() as c:
+        another_id = str(uuid4())
+        c.execute("""INSERT INTO users(id,email,password_hash,role,full_name)
+                     VALUES(%s,'picker2@test.local',%s,'picker','Second picker')""",
+                  (another_id, hash_password("test-password!")))
+        c.execute("INSERT INTO user_warehouses(user_id,warehouse_id) VALUES (%s,%s)",
+                  (another_id, ids["warehouse"]))
+        other_warehouse = str(uuid4())
+        c.execute("INSERT INTO warehouses(id,code,name) VALUES(%s,'OUTSIDE','Чужой склад')",
+                  (other_warehouse,))
+    other_login = client.post("/api/v1/auth/login",
+                              json={"email":"picker2@test.local","password":"test-password!"})
+    assert other_login.status_code == 200
+    other_token = {"Authorization":"Bearer " + other_login.json()["accessToken"]}
+    assert client.get("/api/v1/picks/assignees?warehouseId=" + other_warehouse,
+                      headers=users["supervisor"]).status_code == 403
+    with pool.connection() as c:
+        first_id = one(c,"SELECT id FROM users WHERE email='picker@test.local'")["id"]
+    assert client.post(f"/api/v1/picks/{task_id}/assign",
+                       headers=users["supervisor"],
+                       json={"userId":str(first_id)}).status_code == 200
+    wrong = client.post(f"/api/v1/picks/{task_id}/confirm",
+                        headers=other_token,
+                        json={"barcode":"TEST-BARCODE","actualQty":2})
+    assert wrong.status_code == 403, wrong.text
+    right = client.post(f"/api/v1/picks/{task_id}/confirm",
+                        headers=users["picker"],
+                        json={"barcode":"TEST-BARCODE","actualQty":1})
+    assert right.status_code == 200, right.text
+    assert right.json()["status"] == "shortage_pending"
+    assert client.post(f"/api/v1/picks/{task_id}/approve-shortage",
+                       headers=users["picker"]).status_code == 403
+    approved = client.post(f"/api/v1/picks/{task_id}/approve-shortage",
+                           headers=users["supervisor"])
+    assert approved.status_code == 200
+    with pool.connection() as c:
+        row = one(c,"SELECT status,actual_qty,approved_by FROM pick_tasks WHERE id=%s",(task_id,))
+    assert row["status"] == "accepted" and row["actual_qty"] == 1

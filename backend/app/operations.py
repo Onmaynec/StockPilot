@@ -426,7 +426,8 @@ def cancel_order(order_id: str, user=Depends(require("admin", "manager"))):
 
 
 @router.get("/picks", tags=["Picking"])
-def picks(warehouseId: str | None = None, user=Depends(require("admin", "manager", "picker", "supervisor"))):
+def picks(warehouseId: str | None = None, assignedToMe: bool = False,
+          user=Depends(require("admin", "manager", "picker", "supervisor"))):
     if warehouseId:
         warehouse_access(user, warehouseId)
     with pool.connection() as c:
@@ -438,9 +439,43 @@ def picks(warehouseId: str | None = None, user=Depends(require("admin", "manager
           JOIN orders o ON o.id=t.order_id
           WHERE (%s::uuid IS NULL OR t.warehouse_id=%s::uuid)
             AND (%s OR t.warehouse_id=ANY(%s::uuid[]))
+            AND (NOT %s OR t.assigned_to=%s::uuid)
           ORDER BY CASE t.status WHEN 'pending' THEN 0 WHEN 'shortage_pending' THEN 1 ELSE 2 END,
                    r.expires_at ASC LIMIT 200
-        """, (warehouseId, warehouseId, user["role"] == "admin", user["warehouses"])))
+        """, (warehouseId, warehouseId, user["role"] == "admin",
+              user["warehouses"], assignedToMe, user["id"])))
+
+
+@router.get("/picks/assignees", tags=["Picking"])
+def eligible_pickers(warehouseId: str | None = None,
+                     user=Depends(require("admin", "supervisor"))):
+    """List only active pickers for warehouses managed by this supervisor."""
+    if warehouseId:
+        warehouse_access(user, warehouseId)
+    with pool.connection() as c:
+        return clean(all_rows(c, """
+          SELECT u.id,u.full_name,
+            ARRAY(
+              SELECT uw2.warehouse_id
+              FROM user_warehouses uw2
+              JOIN warehouses w2 ON w2.id=uw2.warehouse_id AND w2.active
+              WHERE uw2.user_id=u.id
+                AND (%s OR uw2.warehouse_id=ANY(%s::uuid[]))
+              ORDER BY uw2.warehouse_id
+            ) AS warehouse_ids
+          FROM users u
+          WHERE u.active AND u.role='picker'
+            AND EXISTS (
+              SELECT 1 FROM user_warehouses uw
+              JOIN warehouses w ON w.id=uw.warehouse_id AND w.active
+              WHERE uw.user_id=u.id
+                AND (%s::uuid IS NULL OR uw.warehouse_id=%s::uuid)
+                AND (%s OR uw.warehouse_id=ANY(%s::uuid[]))
+            )
+          ORDER BY u.full_name,u.id LIMIT 200
+        """, (user["role"] == "admin", user["warehouses"],
+              warehouseId, warehouseId,
+              user["role"] == "admin", user["warehouses"])))
 
 
 @router.post("/picks/{task_id}/assign", tags=["Picking"])
