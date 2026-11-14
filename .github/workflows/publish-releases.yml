@@ -14,8 +14,20 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out release notes
+      - name: Check out release notes and tag targets
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create immutable version tags
+        run: |
+          if ! git ls-remote --tags --exit-code origin refs/tags/v0.1.0 >/dev/null 2>&1; then
+            git tag v0.1.0 5abd53f8c61439447bb8699740f3f7cbad21403e
+            git push origin refs/tags/v0.1.0
+          fi
+          if ! git ls-remote --tags --exit-code origin refs/tags/v0.2.0 >/dev/null 2>&1; then
+            git tag v0.2.0 1cc94c2fb0d7303f15f38998e012a4c0b302e2fa
+            git push origin refs/tags/v0.2.0
+          fi
       - name: Publish v0.1.0 from its source commit
         env:
           GH_TOKEN: ${{ github.token }}
@@ -24,7 +36,7 @@ jobs:
             echo "v0.1.0 already exists; leaving it unchanged"
           else
             gh release create v0.1.0 --repo "$GITHUB_REPOSITORY" \
-              --target 5abd53f8c61439447bb8699740f3f7cbad21403e \
+              --verify-tag \
               --title "StockPilot v0.1.0 — первый MVP" \
               --notes-file docs/RELEASE_0.1.0.md
           fi
@@ -36,7 +48,7 @@ jobs:
             echo "v0.2.0 already exists; leaving it unchanged"
           else
             gh release create v0.2.0 --repo "$GITHUB_REPOSITORY" \
-              --target 1cc94c2fb0d7303f15f38998e012a4c0b302e2fa \
+              --verify-tag \
               --title "StockPilot v0.2.0 — Operations Update" \
               --notes-file docs/RELEASE_0.2.0.md \
               --latest
