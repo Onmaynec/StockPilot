@@ -33,6 +33,7 @@ jobs:
       - run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f backend/migrations/003_inventory.sql
       - run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f backend/migrations/004_rate_limits.sql
       - run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f backend/migrations/005_catalog_search.sql
+      - run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f backend/migrations/006_live_balances.sql
       - run: DEMO_PASSWORD=ci_demo_password_123 PYTHONPATH=backend python -m app.seed
       - run: PYTHONPATH=backend pytest -q backend/tests
   frontend:
@@ -49,7 +50,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: cp .env.example .env
+      - name: Give the backup container the CI runner's unprivileged UID/GID
+        run: |
+          sed -i "/^BACKUP_UID=/d; /^BACKUP_GID=/d" .env
+          printf 'BACKUP_UID=%s\nBACKUP_GID=%s\n' "$(id -u)" "$(id -g)" >> .env
       - run: docker compose config -q
+      - run: docker compose --profile backup config -q
+      - run: docker compose -f compose.recovery.yml config -q
+      - run: sh -n scripts/backup_rotate.sh scripts/schedule_backups.sh scripts/recovery_drill.sh
       - run: docker compose build
       - run: docker compose up -d --wait --wait-timeout 120
       - run: docker compose exec -T api python -m app.security_check
@@ -62,6 +70,34 @@ jobs:
           docker compose exec -T db sh -ec 'PGPASSWORD="$POSTGRES_PASSWORD" psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "ANALYZE products;"'
       - name: Verify isolated PostgreSQL backup and restore
         run: STOCKPILOT_VERIFY_RESTORE=1 sh scripts/verify_restore.sh | tee restore-report.json
+      - name: Create an atomic snapshot with SHA-256 sidecar
+        run: |
+          set -o pipefail
+          mkdir -p backups
+          docker compose run --rm backup /bin/sh /scripts/backup_rotate.sh | tee backup-report.json
+          # Two jobs in quick succession must never overwrite the same filename.
+          docker compose run --rm backup /bin/sh /scripts/backup_rotate.sh > backup-repeat-report.json
+          test "$(find backups -maxdepth 1 -name 'stockpilot-*.dump' | wc -l)" -eq 2
+          for archive in backups/stockpilot-*.dump; do
+            (cd backups && sha256sum --check "$(basename "$archive").sha256")
+          done
+      - name: Reject a corrupted backup archive
+        run: |
+          archive="$(find backups -maxdepth 1 -name 'stockpilot-*.dump' | head -n1)"
+          cp "$archive" backups/tampered.dump
+          (cd backups && sha256sum tampered.dump > tampered.dump.sha256)
+          printf 'corruption' >> backups/tampered.dump
+          if (cd backups && sha256sum --check tampered.dump.sha256); then
+            echo "Tampered dump was incorrectly accepted" >&2
+            exit 1
+          fi
+          rm -f backups/tampered.dump backups/tampered.dump.sha256
+      - name: Boot an isolated full stack from the archived PostgreSQL data
+        run: |
+          set -o pipefail
+          archive="$(find backups -maxdepth 1 -name 'stockpilot-*.dump' | head -n1)"
+          STOCKPILOT_RECOVERY_DRILL=1 STOCKPILOT_RECOVERY_ISOLATED=1 \
+            sh scripts/recovery_drill.sh "$archive" | tee recovery-report.json
       - name: Measure 60 authenticated concurrent users
         run: |
           docker compose exec -T -e STOCKPILOT_PERF_ALLOW=1 api python -m app.load_profile > load-report.json
@@ -76,11 +112,14 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: stockpilot-06-operational-evidence
+          name: stockpilot-07-disaster-recovery-evidence
           path: |
             restore-report.json
             load-report.json
             write-report.json
+            backup-report.json
+            backup-repeat-report.json
+            recovery-report.json
           if-no-files-found: ignore
       - if: failure()
         run: docker compose logs --tail=120 api db migrate worker web
