@@ -9,6 +9,8 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from threading import Barrier
+
+from .perf_metrics import resource_delta, resource_snapshot
 from uuid import uuid4
 
 from .auth import hash_password, issue_token
@@ -22,17 +24,6 @@ URL = os.getenv("STOCKPILOT_LOAD_URL", "http://web/api/v1")
 def percentile(values, percent):
     ordered = sorted(values)
     return round(ordered[max(0, math.ceil(len(ordered) * percent / 100) - 1)], 2)
-
-
-def memory_kib():
-    try:
-        with open("/proc/1/status", encoding="utf-8") as proc:
-            for line in proc:
-                if line.startswith("VmRSS:"):
-                    return int(line.split()[1])
-    except (OSError, ValueError):
-        return None
-    return None
 
 
 def request(token, path):
@@ -86,17 +77,24 @@ def main():
                 c.execute("INSERT INTO user_warehouses(user_id,warehouse_id) VALUES(%s,%s)",
                           (row["id"], wh["id"]))
             pg_version = one(c, "SHOW server_version")["server_version"]
+        db_settings = one(c, """
+          SELECT current_setting('shared_buffers') AS shared_buffers,
+                 current_setting('work_mem') AS work_mem,
+                 current_setting('effective_cache_size') AS effective_cache_size,
+                 current_setting('max_connections') AS max_connections,
+                 current_setting('random_page_cost') AS random_page_cost
+        """)
         tokens = [issue_token(row) for row in identities]
         if request(tokens[0], "/products?q=SKU-00001")[0] != 200:
             raise RuntimeError("Warm-up HTTP request failed")
         barrier = Barrier(USERS)
-        memory_before = memory_kib()
+        resources_before = resource_snapshot()
         begin = time.perf_counter()
         with ThreadPoolExecutor(max_workers=USERS) as executor:
             outcome = list(executor.map(lambda entry: task(*entry, barrier),
                                         ((tok, i) for i, tok in enumerate(tokens))))
         wall = time.perf_counter() - begin
-        memory_after = memory_kib()
+        resources_after = resource_snapshot()
         observations = [item for worker in outcome for item in worker]
         groups = {}
         for name in ("catalog", "stocks"):
@@ -106,6 +104,13 @@ def main():
                             "p50Ms": percentile(timing, 50), "p95Ms": percentile(timing, 95),
                             "p99Ms": percentile(timing, 99), "maxMs": round(max(timing), 2)}
         errors = sum(row[1] != 200 for row in observations)
+        target_p95_ms = int(os.getenv("STOCKPILOT_LOAD_P95_LIMIT_MS", "500"))
+        thresholds = {
+            name: {"targetP95Ms": target_p95_ms,
+                   "actualP95Ms": groups[name]["p95Ms"],
+                   "passed": groups[name]["p95Ms"] <= target_p95_ms}
+            for name in ("catalog", "stocks")
+        }
         print(json.dumps({
             "scenario": "read-only authenticated baseline",
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -114,13 +119,15 @@ def main():
             "durationSeconds": round(wall, 2),
             "requestsPerSecond": round(len(observations) / wall, 2),
             "latency": groups,
-            "environment": {"python": platform.python_version(), "postgres": pg_version,
-                            "apiProcessMemoryKiBBefore": memory_before,
-                            "apiProcessMemoryKiBAfter": memory_after},
-            "limitations": "No 350 orders/3000 movements write mix. Not full AT-10 signoff.",
+            "thresholds": thresholds,
+            "environment": {"python": platform.python_version(),
+                            "platform": platform.platform(), "postgres": pg_version,
+                            "databaseSettings": db_settings, "hostCpuCount": os.cpu_count()},
+            "resources": resource_delta(resources_before, resources_after, wall),
+            "limitations": "Read baseline only; companion mixed-write profile covers 350 orders and 3,000 ledger movements. CI hardware is not production hardware.",
         }, ensure_ascii=False, indent=2))
-        if errors:
-            raise SystemExit(1)
+        if errors or not all(item["passed"] for item in thresholds.values()):
+            raise SystemExit("Read workload failed: HTTP errors or p95 target exceeded.")
     finally:
         try:
             with pool.connection() as c, c.transaction():
