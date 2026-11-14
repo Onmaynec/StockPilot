@@ -4,6 +4,7 @@ import io
 import os
 from collections import Counter
 from datetime import datetime, timezone
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header
 from fastapi.responses import Response
@@ -59,7 +60,15 @@ class UserIn(BaseModel):
     fullName: str
     role: str
     password: str = Field(min_length=12)
-    warehouseIds: list[str] = []
+    warehouseIds: list[UUID] = Field(default_factory=list)
+
+
+class UserWarehouseAccess(BaseModel):
+    warehouseIds: list[UUID] = Field(default_factory=list, max_length=100)
+
+
+class UserStatus(BaseModel):
+    active: bool
 
 
 class CsvPayload(BaseModel):
@@ -102,7 +111,76 @@ def add_user(data: UserIn, user=Depends(require("admin"))):
 @router.get("/users", tags=["Admin"])
 def users(user=Depends(require("admin"))):
     with pool.connection() as c:
-        return clean(all_rows(c, "SELECT id,email,full_name,role,active FROM users ORDER BY full_name"))
+        return clean(all_rows(c, """
+          SELECT u.id,u.email,u.full_name,u.role,u.active,
+                 ARRAY(SELECT uw.warehouse_id FROM user_warehouses uw
+                       WHERE uw.user_id=u.id ORDER BY uw.warehouse_id) AS warehouse_ids
+          FROM users u ORDER BY u.full_name,u.id
+        """))
+
+
+@router.post("/users/{user_id}/access", tags=["Admin"])
+def update_user_access(user_id: UUID, data: UserWarehouseAccess,
+                       admin=Depends(require("admin"))):
+    """Replace warehouse grants atomically; revoke all old JWTs on changes."""
+    selected = sorted(set(data.warehouseIds), key=str)
+    with pool.connection() as c, c.transaction():
+        employee = one(c, """
+          SELECT id,role,active FROM users WHERE id=%s FOR UPDATE
+        """, (user_id,))
+        if not employee:
+            error("NOT_FOUND", "Сотрудник не найден", 404)
+        valid = all_rows(c, """
+          SELECT id FROM warehouses WHERE active AND id=ANY(%s::uuid[])
+        """, (selected,))
+        if len(valid) != len(selected):
+            error("WAREHOUSE_INVALID", "Можно назначить только существующие активные склады", 409)
+        previous = [
+            row["warehouse_id"] for row in all_rows(c,
+                "SELECT warehouse_id FROM user_warehouses WHERE user_id=%s",
+                (user_id,))
+        ]
+        if set(previous) == set(selected):
+            return {"id": str(user_id), "warehouseIds": [str(x) for x in selected],
+                    "changed": False, "sessionsRevoked": False}
+        c.execute("DELETE FROM user_warehouses WHERE user_id=%s", (user_id,))
+        for warehouse in selected:
+            c.execute("""
+              INSERT INTO user_warehouses(user_id,warehouse_id) VALUES(%s,%s)
+            """, (user_id, warehouse))
+        c.execute("UPDATE users SET token_version=token_version+1 WHERE id=%s",
+                  (user_id,))
+        audit(c, admin["id"], "user.warehouses_change", "user", user_id,
+              before={"warehouseIds": [str(x) for x in previous]},
+              after={"warehouseIds": [str(x) for x in selected],
+                     "sessionsRevoked": True})
+        return {"id": str(user_id), "warehouseIds": [str(x) for x in selected],
+                "changed": True, "sessionsRevoked": True}
+
+
+@router.post("/users/{user_id}/status", tags=["Admin"])
+def update_user_status(user_id: UUID, data: UserStatus,
+                       admin=Depends(require("admin"))):
+    """Deactivation revokes all JWTs and must not lock the actor out."""
+    with pool.connection() as c, c.transaction():
+        employee = one(c, """
+          SELECT id,active,role FROM users WHERE id=%s FOR UPDATE
+        """, (user_id,))
+        if not employee:
+            error("NOT_FOUND", "Сотрудник не найден", 404)
+        if str(user_id) == str(admin["id"]) and not data.active:
+            error("SELF_DISABLE", "Нельзя заблокировать собственную учётную запись", 409)
+        if employee["active"] == data.active:
+            return {"id": str(user_id), "active": data.active,
+                    "changed": False, "sessionsRevoked": False}
+        c.execute("""
+          UPDATE users SET active=%s,token_version=token_version+1 WHERE id=%s
+        """, (data.active, user_id))
+        audit(c, admin["id"], "user.status_change", "user", user_id,
+              before={"active": employee["active"]},
+              after={"active": data.active, "sessionsRevoked": True})
+        return {"id": str(user_id), "active": data.active,
+                "changed": True, "sessionsRevoked": True}
 
 
 @router.post("/products", status_code=201, tags=["Catalog"])

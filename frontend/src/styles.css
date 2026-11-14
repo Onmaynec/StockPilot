@@ -382,3 +382,66 @@ td .positive,td .negative { font-size: 12px; }
 .variance-kpis span { display:block; font-size:10px; color:var(--muted); margin-bottom:8px; }
 .variance-kpis strong { font-size:20px; color:#e5f3f0; }
 @media(max-width:480px) { .variance-kpis {gap:5px;} .variance-kpis > div {padding:10px 7px;} }
+
+
+/* v0.5.0: Warehouse administration workspace */
+.admin-console { display:flex; flex-direction:column; gap:18px; }
+.admin-tabs { display:flex; flex-wrap:wrap; gap:8px; border-bottom:1px solid var(--line);
+  padding-bottom:12px; }
+.admin-tab { display:flex; align-items:center; gap:9px; padding:11px 15px; font-weight:650;
+  color:#9aabb5; background:#15212b; border:1px solid #2b3944; border-radius:10px;
+  transition:background .16s,color .16s,border-color .16s; }
+.admin-tab.selected,.admin-tab:hover { color:var(--accent); background:#1a332f; border-color:#39665a; }
+.admin-split { display:grid; grid-template-columns:minmax(0,1.45fr) minmax(300px,1fr);
+  gap:18px; align-items:start; }
+.admin-stack { display:flex; flex-direction:column; gap:18px; }
+.admin-panel { padding:22px; min-width:0; }
+.admin-panel h2 { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+.admin-panel form { display:flex; flex-direction:column; gap:14px; }
+.admin-panel form .field { margin:0; }
+.admin-panel .btn { align-self:flex-start; }
+.admin-panel .helper { font-size:12px; }
+.admin-records { max-height:680px; overflow:auto; margin-top:15px;
+  border-top:1px solid var(--line); }
+.admin-record { border-bottom:1px solid var(--line); padding:16px 2px; }
+.admin-record-main { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+.admin-record-main strong { display:block; font-size:13px; }
+.admin-record-main small { display:block; color:#93a3af; margin-top:4px; font-size:11px; }
+.admin-user-status { white-space:nowrap; font-size:10px; font-weight:700;
+  border-radius:30px; padding:5px 9px; }
+.admin-user-status.enabled { color:#79e3c8; background:#15392f; }
+.admin-user-status.disabled { color:#f3a5a1; background:#3d2428; }
+.admin-record-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+.admin-record-actions .btn { padding:9px 10px; font-size:11px; }
+.admin-grants { border:1px solid #314c47; background:#11251f; border-radius:9px;
+  padding:15px; margin-top:14px; display:flex; flex-direction:column; gap:12px; }
+.admin-subtitle { display:block; font-size:12px; padding:4px 0; }
+.admin-warehouse-choices { display:flex; flex-wrap:wrap; gap:9px; }
+.admin-check { display:flex; align-items:center; gap:9px; padding:9px 11px;
+  background:#14242c; border:1px solid #2e3d49; border-radius:8px;
+  font-size:11px; font-weight:600; color:#dde8ed; cursor:pointer; }
+.admin-check input { width:16px; height:16px; min-height:16px; margin:0;
+  accent-color:#69dfc2; }
+.admin-warehouse-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(155px,1fr));
+  gap:10px; margin:15px 0 18px; }
+.admin-warehouse-option { background:#121f28; border:1px solid #30404d;
+  border-radius:11px; min-height:98px; padding:15px; display:flex;
+  flex-direction:column; gap:5px; align-items:flex-start; text-align:left; color:#e7f1f4; }
+.admin-warehouse-option:hover,.admin-warehouse-option.selected {
+  border-color:#70d8bb; background:#19352f; }
+.admin-warehouse-option svg { color:var(--accent); }
+.admin-warehouse-option strong { font-size:12px; }
+.admin-warehouse-option span { font-size:11px; color:#a2b4ba; }
+.admin-inline-form { display:grid!important; grid-template-columns:1fr 1.5fr auto;
+  gap:12px!important; align-items:end; }
+.admin-inline-form .btn { white-space:nowrap; margin-bottom:1px; }
+.admin-panel .detail-row { border-bottom:1px solid #283640; }
+@media(max-width:1150px) { .admin-split {grid-template-columns:1fr;} }
+@media(max-width:700px) {
+  .admin-panel {padding:15px;}
+  .admin-tabs {display:grid; grid-template-columns:1fr;}
+  .admin-tab {justify-content:center;}
+  .admin-inline-form {grid-template-columns:1fr;}
+  .admin-record-main {flex-wrap:wrap;}
+  .admin-check {width:100%;}
+}

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { OrderComposer, ReturnComposer, SecurityComposer } from './workflows';
+import { AdminConsole } from './AdminConsole';
 import {
   Activity, ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Barcode, Boxes, Check,
   ChevronDown, ChevronRight, ClipboardCheck, ClipboardList, FileSpreadsheet,
@@ -20,6 +21,7 @@ const NAV = [
   { id: 'inventory', label: 'Инвентаризации', icon: ClipboardCheck },
   { id: 'audit', label: 'Журнал аудита', icon: ShieldCheck },
   { id: 'import', label: 'Импорт CSV', icon: FileSpreadsheet },
+  { id: 'admin', label: 'Администрирование', icon: ShieldCheck },
 ];
 const LABELS = {
   draft: 'Черновик', posted: 'Проведён', confirmed: 'Подтверждён',
@@ -427,7 +429,7 @@ export default function App() {
       <nav className="side-nav">{NAV.filter(n => {
         if (user.role === 'director') return ['dashboard', 'audit', 'inventory', 'stocks', 'products', 'anomalies'].includes(n.id);
         if (['audit', 'anomalies'].includes(n.id)) return ['admin', 'supervisor', 'director'].includes(user.role);
-        if (n.id === 'import') return user.role === 'admin';
+        if (['import','admin'].includes(n.id)) return user.role === 'admin';
         return true;
       }).map(item => {
         const Icon = item.icon;
@@ -436,7 +438,7 @@ export default function App() {
           <span>{item.label}</span>{screen === item.id && <span className="nav-indicator" />}</button>;
       })}</nav>
       <div className="sidebar-bottom"><div className="system-status"><span className="live-indicator" />
-        Серверная проверка операций</div><div className="version">STOCKPILOT WMS <span>v0.4.0</span></div></div>
+        Серверная проверка операций</div><div className="version">STOCKPILOT WMS <span>v0.5.0</span></div></div>
     </aside>
 
     <main className="main">
@@ -647,6 +649,12 @@ export default function App() {
                 onClick={() => setPage(page + 1)}>Вперёд</Btn></div>}
           </div>
         </>}
+
+        {screen === 'admin' && isAdmin && <AdminConsole api={api} warehouses={warehouses}
+          onNotify={alertMessage} onWarehousesChanged={async () => {
+            const next = await api('GET', '/warehouses');
+            setWarehouses(next);
+          }} />}
 
         {screen === 'import' && <div className="panel import-panel">
           <FileSpreadsheet size={38} className="accent" /><h2>Импорт номенклатуры из CSV</h2>

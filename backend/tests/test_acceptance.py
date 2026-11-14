@@ -589,3 +589,98 @@ def test_mixed_warehouse_order_is_hidden_from_partial_scope(env):
     assert client.get("/api/v1/orders/" + oid, headers=users["manager"]).status_code == 403
     admin = client.get("/api/v1/orders", headers=users["admin"])
     assert oid in {row["id"] for row in admin.json()}
+
+
+
+def test_admin_access_updates_are_atomic_and_revoke_tokens(env):
+    client, users, ids = env
+    with pool.connection() as c:
+        employee = one(c, "SELECT id FROM users WHERE email='manager@test.local'")["id"]
+    foreign = str(uuid4())
+    with pool.connection() as c:
+        c.execute("INSERT INTO warehouses(id,code,name) VALUES(%s,'W-NEW','Соседний склад')", (foreign,))
+    wrong = client.post(f"/api/v1/users/{employee}/access",
+                        headers=users["picker"], json={"warehouseIds":[foreign]})
+    assert wrong.status_code == 403
+    invalid = client.post(f"/api/v1/users/{employee}/access",
+                          headers=users["admin"],
+                          json={"warehouseIds":[foreign,str(uuid4())]})
+    assert invalid.status_code == 409
+    original = client.get("/api/v1/warehouses", headers=users["manager"])
+    assert original.status_code == 200
+    assert {row["id"] for row in original.json()} == {ids["warehouse"]}
+    applied = client.post(f"/api/v1/users/{employee}/access",
+                          headers=users["admin"], json={"warehouseIds":[foreign,foreign]})
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["warehouseIds"] == [foreign]
+    assert applied.json()["sessionsRevoked"] is True
+    old = client.get("/api/v1/auth/me", headers=users["manager"])
+    assert old.status_code == 401
+    new_login = client.post("/api/v1/auth/login",
+                            json={"email":"manager@test.local","password":"test-password!"})
+    assert new_login.status_code == 200
+    headers = {"Authorization":"Bearer " + new_login.json()["accessToken"]}
+    listed = client.get("/api/v1/warehouses", headers=headers)
+    assert listed.status_code == 200, listed.text
+    assert {row["id"] for row in listed.json()} == {foreign}
+    forbidden = client.get("/api/v1/bins?warehouseId=" + ids["warehouse"], headers=headers)
+    assert forbidden.status_code == 403
+    noop = client.post(f"/api/v1/users/{employee}/access", headers=users["admin"],
+                       json={"warehouseIds":[foreign]})
+    assert noop.status_code == 200 and noop.json()["changed"] is False
+    assert client.get("/api/v1/auth/me", headers=headers).status_code == 200
+
+
+def test_admin_status_revocation_and_self_disable_guard(env):
+    client, users, ids = env
+    with pool.connection() as c:
+        admin_id = one(c, "SELECT id FROM users WHERE email='admin@test.local'")["id"]
+        picker_id = one(c, "SELECT id FROM users WHERE email='picker@test.local'")["id"]
+    self_block = client.post(f"/api/v1/users/{admin_id}/status",
+                             headers=users["admin"], json={"active": False})
+    assert self_block.status_code == 409
+    assert client.get("/api/v1/auth/me", headers=users["admin"]).status_code == 200
+    blocked = client.post(f"/api/v1/users/{picker_id}/status",
+                          headers=users["admin"], json={"active": False})
+    assert blocked.status_code == 200, blocked.text
+    assert blocked.json()["sessionsRevoked"] is True
+    assert client.get("/api/v1/auth/me", headers=users["picker"]).status_code == 401
+    login = client.post("/api/v1/auth/login",
+                        json={"email":"picker@test.local","password":"test-password!"})
+    assert login.status_code == 401
+    rest = client.post(f"/api/v1/users/{picker_id}/status",
+                       headers=users["admin"], json={"active": True})
+    assert rest.status_code == 200
+    assert client.post("/api/v1/auth/login",
+                       json={"email":"picker@test.local","password":"test-password!"}).status_code == 200
+    audit_rows = client.get("/api/v1/audit",headers=users["admin"])
+    assert audit_rows.status_code == 200
+    with pool.connection() as c:
+        events = c.execute("""
+          SELECT action FROM audit_events
+          WHERE entity_type='user' AND entity_id=%s
+          ORDER BY id
+        """, (str(picker_id),)).fetchall()
+    assert [x["action"] for x in events] == ["user.status_change","user.status_change"]
+
+
+def test_admin_users_list_scoped_and_user_creation_validates_warehouse(env):
+    client, users, ids = env
+    assert client.get("/api/v1/users",headers=users["manager"]).status_code == 403
+    response = client.get("/api/v1/users",headers=users["admin"])
+    assert response.status_code == 200
+    manager = next(x for x in response.json() if x["email"]=="manager@test.local")
+    assert manager["warehouse_ids"] == [ids["warehouse"]]
+    bad = client.post("/api/v1/users",headers=users["admin"],json={
+        "email":"provision-invalid@example.org","fullName":"Wrong warehouse",
+        "role":"picker","password":"password-long-enough",
+        "warehouseIds":["not-a-uuid"]
+    })
+    assert bad.status_code == 400
+    with pool.connection() as c:
+        assert one(c,"SELECT 1 FROM users WHERE email='provision-invalid@example.org'") is None
+    created = client.post("/api/v1/users",headers=users["admin"],json={
+        "email":"newstaff@example.org","fullName":"New employee","role":"picker",
+        "password":"password-long-enough","warehouseIds":[ids["warehouse"]]
+    })
+    assert created.status_code == 201,created.text
