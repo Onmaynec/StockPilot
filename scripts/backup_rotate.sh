@@ -22,8 +22,10 @@ if ! mkdir .stockpilot-backup.lock 2>/dev/null; then
   exit 3
 fi
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-file="stockpilot-$stamp-$$.dump"
-temporary=".$file.partial"
+# mktemp avoids reusing filenames when separate containers run within one second.
+temporary="$(mktemp ".stockpilot-$stamp-XXXXXX.partial")"
+file="${temporary#.}"
+file="${file%.partial}.dump"
 cleanup() {
   rm -f "$temporary" ".$file.sha256.partial"
   rmdir .stockpilot-backup.lock 2>/dev/null || true
