@@ -39,7 +39,7 @@ pg_restore --list "$temporary" >/dev/null
 mv "$temporary" "$file"
 sha256sum "$file" > ".$file.sha256.partial"
 mv ".$file.sha256.partial" "$file.sha256"
-sha256sum --check "$file.sha256" >/dev/null
+sha256sum -c "$file.sha256" >/dev/null
 
 # The newest two archives are never removed, regardless of retention.
 latest_two="$(ls -1t stockpilot-*.dump | head -n 2)"

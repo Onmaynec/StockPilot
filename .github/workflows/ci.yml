@@ -68,6 +68,7 @@ jobs:
         run: STOCKPILOT_VERIFY_RESTORE=1 sh scripts/verify_restore.sh | tee restore-report.json
       - name: Create an atomic snapshot with SHA-256 sidecar
         run: |
+          set -o pipefail
           mkdir -p backups
           docker compose run --rm backup /bin/sh /scripts/backup_rotate.sh | tee backup-report.json
           test "$(find backups -maxdepth 1 -name 'stockpilot-*.dump' | wc -l)" -eq 1
@@ -86,6 +87,7 @@ jobs:
           rm -f backups/tampered.dump backups/tampered.dump.sha256
       - name: Boot an isolated full stack from the archived PostgreSQL data
         run: |
+          set -o pipefail
           archive="$(find backups -maxdepth 1 -name 'stockpilot-*.dump' | head -n1)"
           STOCKPILOT_RECOVERY_DRILL=1 STOCKPILOT_RECOVERY_ISOLATED=1 \
             sh scripts/recovery_drill.sh "$archive" | tee recovery-report.json
