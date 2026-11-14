@@ -608,6 +608,37 @@ def confirm_shipment(shipment_id: str,
         return result
 
 
+@router.get("/shipments/{shipment_id}/returnable", tags=["Shipping"])
+def returnable_items(shipment_id: str,
+                     user=Depends(require("admin", "manager", "picker", "supervisor"))):
+    """Only unreturned actual shipment quantities; never expose another warehouse."""
+    with pool.connection() as c:
+        shipment = one(c, """
+          SELECT id,order_id,warehouse_id,status FROM shipments WHERE id=%s
+        """, (shipment_id,))
+        if not shipment:
+            error("NOT_FOUND", "Отгрузка не найдена", 404)
+        warehouse_access(user, shipment["warehouse_id"])
+        if shipment["status"] != "posted":
+            error("SHIPMENT_STATE", "Отгрузка ещё не проведена", 409)
+        rows = all_rows(c, """
+          SELECT r.id AS reservation_id,p.sku,p.name,
+                 r.shipped_qty,
+                 COALESCE(sum(ret.qty),0)::int AS returned_qty,
+                 (r.shipped_qty-COALESCE(sum(ret.qty),0))::int AS returnable_qty
+          FROM reservations r
+          JOIN order_lines l ON l.id=r.order_line_id
+          JOIN products p ON p.id=r.product_id
+          LEFT JOIN return_lines ret ON ret.reservation_id=r.id
+          WHERE l.order_id=%s AND r.warehouse_id=%s
+          GROUP BY r.id,p.id
+          HAVING r.shipped_qty > COALESCE(sum(ret.qty),0)
+          ORDER BY p.sku,r.id
+        """, (shipment["order_id"], shipment["warehouse_id"]))
+        return {"shipmentId": shipment_id, "warehouseId": str(shipment["warehouse_id"]),
+                "items": clean(rows)}
+
+
 @router.post("/shipments/{shipment_id}/returns", status_code=201, tags=["Shipping"])
 def create_return(shipment_id: str, data: ReturnInput,
                   idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),

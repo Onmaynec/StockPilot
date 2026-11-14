@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
 from .db import pool, request_id
-from . import catalog, operations, inventory
+from . import catalog, operations, inventory, account
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("stockpilot")
@@ -47,7 +47,7 @@ async def lifespan(app):
 
 
 app = FastAPI(
-    title="StockPilot WMS", version="0.1.0",
+    title="StockPilot WMS", version="0.2.0",
     description="Transactional multi-warehouse inventory API. Errors include requestId.",
     lifespan=lifespan,
 )
@@ -59,6 +59,7 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Request-Id"],
 )
 app.include_router(catalog.router, prefix="/api/v1")
+app.include_router(account.router, prefix="/api/v1")
 app.include_router(operations.router, prefix="/api/v1")
 app.include_router(inventory.router, prefix="/api/v1")
 

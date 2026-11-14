@@ -356,3 +356,100 @@ def test_csv_export_and_movement_filters_respect_warehouse_scope(env):
     unauthorized = client.get("/api/v1/export/stocks.csv?warehouseId=" + str(uuid4()),
                               headers=users["manager"])
     assert unauthorized.status_code == 403, unauthorized.text
+
+
+def test_returnable_shipment_decrements_after_return(env):
+    client, users, ids = env
+    _, shipment_id, reservation_id = shipped_order(env, 3)
+    confirm = client.post("/api/v1/shipments/" + shipment_id + "/confirm",
+                          headers={**users["picker"], "Idempotency-Key": "ship-returnable-01"},
+                          json={})
+    assert confirm.status_code == 200, confirm.text
+    route = "/api/v1/shipments/" + shipment_id + "/returnable"
+    shown = client.get(route, headers=users["manager"])
+    assert shown.status_code == 200, shown.text
+    assert len(shown.json()["items"]) == 1
+    assert shown.json()["items"][0]["returnable_qty"] == 3
+    returned = client.post("/api/v1/shipments/" + shipment_id + "/returns",
+                           headers={**users["picker"], "Idempotency-Key": "return-once-01"},
+                           json={"reservationId": reservation_id,
+                                 "binId": ids["bin"], "qty": 2})
+    assert returned.status_code == 201, returned.text
+    replay = client.post("/api/v1/shipments/" + shipment_id + "/returns",
+                         headers={**users["picker"], "Idempotency-Key": "return-once-01"},
+                         json={"reservationId": reservation_id,
+                               "binId": ids["bin"], "qty": 2})
+    assert replay.status_code == 200, replay.text
+    assert replay.json() == returned.json()
+    assert client.get(route, headers=users["manager"]).json()["items"][0]["returnable_qty"] == 1
+    assert stock(env)["physical"] == 9
+    last = client.post("/api/v1/shipments/" + shipment_id + "/returns",
+                       headers={**users["picker"], "Idempotency-Key": "return-once-02"},
+                       json={"reservationId": reservation_id, "binId": ids["bin"], "qty": 1})
+    assert last.status_code == 201, last.text
+    assert client.get(route, headers=users["manager"]).json()["items"] == []
+    assert stock(env)["physical"] == 10
+
+
+def test_multiline_shortage_requires_supervisor_before_shipping(env):
+    client, users, ids = env
+    receipt(env, 12)
+    order = client.post("/api/v1/orders", headers=users["manager"], json={
+        "customer": "Многострочный заказ",
+        "items": [
+            {"productId": ids["product"], "warehouseId": ids["warehouse"], "qty": 3},
+            {"productId": ids["product"], "warehouseId": ids["warehouse"], "qty": 2}
+        ]
+    })
+    assert order.status_code == 201, order.text
+    oid = order.json()["id"]
+    assert reserve(env, oid).status_code == 200
+    details = client.get("/api/v1/orders/" + oid, headers=users["manager"]).json()
+    assert len(details["picks"]) == 2
+    for index, task in enumerate(details["picks"]):
+        actual = task["expected_qty"] - (1 if index == 0 else 0)
+        response = client.post("/api/v1/picks/" + task["id"] + "/confirm",
+                               headers=users["picker"], json={
+                                   "barcode": "SKU-001", "actualQty": actual
+                               })
+        assert response.status_code == 200, response.text
+    shipment_id = details["shipments"][0]["id"]
+    blocked = client.post("/api/v1/shipments/" + shipment_id + "/confirm",
+                          headers={**users["picker"], "Idempotency-Key": "blocked-shortage-01"},
+                          json={})
+    assert blocked.status_code == 409, blocked.text
+    shortage = details["picks"][0]["id"]
+    wrong_role = client.post("/api/v1/picks/" + shortage + "/approve-shortage",
+                             headers=users["picker"])
+    assert wrong_role.status_code == 403
+    approved = client.post("/api/v1/picks/" + shortage + "/approve-shortage",
+                           headers=users["supervisor"])
+    assert approved.status_code == 200, approved.text
+    shipped = client.post("/api/v1/shipments/" + shipment_id + "/confirm",
+                          headers={**users["picker"], "Idempotency-Key": "approved-shortage-01"},
+                          json={})
+    assert shipped.status_code == 200, shipped.text
+    assert shipped.json()["shippedQty"] == 4
+    assert stock(env)["physical"] == 8
+    assert stock(env)["reserved"] == 0
+
+
+def test_returnable_scope_not_visible_cross_warehouse(env):
+    client, users, ids = env
+    _, shipment_id, _ = shipped_order(env, 1)
+    assert client.post("/api/v1/shipments/" + shipment_id + "/confirm",
+                       headers={**users["picker"], "Idempotency-Key": "ship-scope-01"},
+                       json={}).status_code == 200
+    with pool.connection() as c:
+        outsider = str(uuid4())
+        c.execute("""
+          INSERT INTO users(id,email,password_hash,role,full_name)
+          VALUES(%s,'foreign@test.local',%s,'manager','Foreign')
+        """, (outsider, hash_password("test-password!")))
+    logged = client.post("/api/v1/auth/login", json={
+        "email": "foreign@test.local", "password": "test-password!"
+    })
+    assert logged.status_code == 200
+    forbidden = client.get("/api/v1/shipments/" + shipment_id + "/returnable",
+                           headers={"Authorization": "Bearer " + logged.json()["accessToken"]})
+    assert forbidden.status_code == 403, forbidden.text
