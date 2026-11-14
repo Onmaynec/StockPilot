@@ -20,8 +20,6 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("stockpilot")
 REQUESTS = Counter("stockpilot_http_requests_total", "HTTP requests", ["method", "path", "status"])
 LATENCY = Histogram("stockpilot_http_duration_seconds", "Request duration", ["method", "path"])
-        return False
-
 
 
 @asynccontextmanager
