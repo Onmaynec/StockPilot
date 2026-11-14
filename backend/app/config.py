@@ -17,7 +17,7 @@ def validate_runtime_config():
 
     lowered = secret.lower()
     placeholders = ("replace_with", "change_me", "local_", "ci_only", "demo", "password")
-    if len(secret) < 48 or any(marker in lowered for marker in placeholders):
+    if len(secret) < 48 or len(set(secret)) < 16 or any(marker in lowered for marker in placeholders):
         raise RuntimeError(
             "Production JWT_SECRET must be a generated secret of at least 48 characters"
         )

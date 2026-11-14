@@ -25,8 +25,9 @@ stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 # mktemp avoids reusing filenames when separate containers run within one second.
 temporary="$(mktemp ".stockpilot-$stamp-XXXXXX")"
 file="${temporary#.}.dump"
+status_tmp=""
 cleanup() {
-  rm -f "$temporary" ".$file.sha256.partial"
+  rm -f "$temporary" ".$file.sha256.partial" "$status_tmp"
   rmdir .stockpilot-backup.lock 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -59,5 +60,17 @@ done
 
 size="$(wc -c < "$file" | tr -d ' ')"
 elapsed="$(( $(date +%s) - started ))"
+digest="$(sha256sum "$file" | cut -d ' ' -f1)"
+status_tmp="$(mktemp .stockpilot-backup-status.XXXXXX)"
+{
+  printf 'status=created\n'
+  printf 'timestamp=%s\n' "$(date +%s)"
+  printf 'archive=%s\n' "$file"
+  printf 'sha256=%s\n' "$digest"
+  printf 'bytes=%s\n' "$size"
+  printf 'elapsed_seconds=%s\n' "$elapsed"
+} > "$status_tmp"
+mv "$status_tmp" .stockpilot-backup-status
+status_tmp=""
 printf '{"result":"created","archive":"%s","sha256":"%s","bytes":%s,"elapsedSeconds":%s,"retentionDays":%s}\n' \
-  "$file" "$(sha256sum "$file" | cut -d ' ' -f1)" "$size" "$elapsed" "$retention"
+  "$file" "$digest" "$size" "$elapsed" "$retention"
