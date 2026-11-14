@@ -105,6 +105,7 @@ function PickCard({
   const video = useRef(null);
   const stream = useRef(null);
   const timer = useRef(null);
+  const detecting = useRef(false);
   const active = task.status === 'pending';
   const expected = Number(task.expected_qty);
   const picked = Number(actual);
@@ -127,20 +128,37 @@ function PickCard({
     clearInterval(timer.current);
     if (stream.current) stream.current.getTracks().forEach(track => track.stop());
     stream.current = null;
+    detecting.current = false;
     setCamera(false);
   };
-  useEffect(() => () => {
-    clearInterval(timer.current);
-    if (stream.current) stream.current.getTracks().forEach(track => track.stop());
+  useEffect(() => {
+    const stopWhenHidden = () => {
+      if (!document.hidden || !stream.current) return;
+      clearInterval(timer.current);
+      stream.current.getTracks().forEach(track => track.stop());
+      stream.current = null;
+      detecting.current = false;
+      setCamera(false);
+    };
+    document.addEventListener('visibilitychange', stopWhenHidden);
+    return () => {
+      document.removeEventListener('visibilitychange', stopWhenHidden);
+      clearInterval(timer.current);
+      if (stream.current) stream.current.getTracks().forEach(track => track.stop());
+      stream.current = null;
+      detecting.current = false;
+    };
   }, []);
   async function scan() {
     if (camera) { stop(); return; }
     setScanError('');
     try {
-      if (!('BarcodeDetector' in window)) throw new Error('Камера-сканер недоступна в этом браузере');
+      if (typeof window.BarcodeDetector !== 'function') {
+        throw new Error('Автоматическое распознавание недоступно в этом браузере');
+      }
       if (!navigator.mediaDevices?.getUserMedia) throw new Error('Камера недоступна');
       const media = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' }
+        video: { facingMode: { ideal: 'environment' } }
       });
       stream.current = media;
       setCamera(true);
@@ -152,11 +170,16 @@ function PickCard({
         }
       }, 0);
       timer.current = setInterval(async () => {
-        if (!video.current || !stream.current) return;
+        if (!video.current || !stream.current || detecting.current) return;
+        detecting.current = true;
         try {
           const codes = await detector.detect(video.current);
-          if (codes[0]?.rawValue) { setBarcode(codes[0].rawValue); stop(); }
-        } catch { /* camera may still be initializing */ }
+          if (codes[0]?.rawValue && stream.current) {
+            setBarcode(codes[0].rawValue);
+            stop();
+          }
+        } catch { /* камера может ещё запускаться или не распознать кадр */ }
+        finally { detecting.current = false; }
       }, 500);
     } catch (err) {
       setScanError((err.message || 'Не удалось открыть камеру') +
@@ -532,7 +555,7 @@ export default function App() {
           <span>{item.label}</span>{screen === item.id && <span className="nav-indicator" />}</button>;
       })}</nav>
       <div className="sidebar-bottom"><div className="system-status"><span className="live-indicator" />
-        Серверная проверка операций</div><div className="version">STOCKPILOT WMS <span>v0.9.0</span></div></div>
+        Серверная проверка операций</div><div className="version">STOCKPILOT WMS <span>v1.0.0</span></div></div>
     </aside>
 
     <main className="main">

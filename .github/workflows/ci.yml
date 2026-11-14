@@ -118,7 +118,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: stockpilot-09-performance-and-recovery-evidence
+          name: stockpilot-10-release-and-recovery-evidence
           path: |
             restore-report.json
             load-report.json
@@ -142,13 +142,16 @@ jobs:
       - name: Install web dependencies
         run: cd frontend && npm install --no-audit --no-fund
       - name: Install Playwright browsers
-        run: cd frontend && npx playwright install --with-deps chromium firefox
+        run: |
+          cd frontend
+          npx playwright install --with-deps chromium firefox
+          npx playwright install chrome msedge
       - name: Start isolated demo environment
         run: |
           cp .env.example .env
           docker compose up -d --build --wait --wait-timeout 180
           docker compose exec -T api python -m app.seed
-      - name: Browser E2E - mobile Chromium and desktop Firefox
+      - name: Browser E2E - 375px mobile Chromium, desktop Chrome, Edge and Firefox
         run: cd frontend && npm run test:e2e
         env:
           CI: '1'

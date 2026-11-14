@@ -21,7 +21,8 @@ async function logout(page) {
   await expect(page.getByRole('button', { name: 'Войти', exact: true })).toBeVisible();
 }
 
-test('manager -> picker: multi-line order, manual scan, shipment and audit', async ({ page }) => {
+test('manager -> picker: mobile scan fallback, shipment, return and audit', async ({ page }) => {
+  test.setTimeout(90_000);
   const suffix = String(Date.now());
   const customer = 'E2E ' + suffix;
   await authenticate(page, 'manager@stockpilot.local');
@@ -59,6 +60,15 @@ test('manager -> picker: multi-line order, manual scan, shipment and audit', asy
   await section(page, 'Задания отбора');
   const card = page.locator('.pick-card').filter({ hasText: 'SKU-00001' }).first();
   await expect(card).toBeVisible();
+  if ((await page.viewportSize())?.width <= 400) {
+    expect(await page.evaluate(() =>
+      document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  }
+  await page.evaluate(() => Object.defineProperty(window, 'BarcodeDetector', {
+    configurable: true, value: undefined
+  }));
+  await card.getByRole('button', { name: 'Камера' }).click();
+  await expect(card.getByRole('alert')).toContainText('Введите штрихкод или артикул вручную');
   await card.getByPlaceholder('Сканируйте или введите').fill('SKU-00001');
   await card.getByRole('spinbutton', { name: 'Фактически отобрано' }).fill('2');
   const pickResponse = page.waitForResponse(response =>
@@ -76,7 +86,42 @@ test('manager -> picker: multi-line order, manual scan, shipment and audit', asy
     headers: { Authorization: 'Bearer ' + pickerToken }
   });
   expect(detail.status()).toBe(200);
-  expect((await detail.json()).order.status).toBe('shipped');
+  const detailBody = await detail.json();
+  expect(detailBody.order.status).toBe('shipped');
+  const shipmentId = detailBody.shipments[0].id;
+
+  await section(page, 'Отгрузки');
+  const shipmentRow = page.locator('tr').filter({ hasText: orderId.slice(0, 8) });
+  await expect(shipmentRow.getByRole('button', { name: 'Возврат' })).toBeVisible();
+  await shipmentRow.getByRole('button', { name: 'Возврат' }).click();
+  const returnForm = page.getByTestId('return-composer');
+  await expect(returnForm).toBeVisible();
+  await returnForm.getByRole('combobox', { name: 'Позиция возврата' }).selectOption({ index: 0 });
+  await returnForm.getByRole('combobox', { name: 'Ячейка возврата' }).selectOption({ index: 0 });
+  await returnForm.getByRole('spinbutton', { name: 'Количество возврата' }).fill('1');
+  const returnResponse = page.waitForResponse(response =>
+    response.url().includes('/api/v1/shipments/' + shipmentId + '/returns') &&
+    response.request().method() === 'POST');
+  await returnForm.getByRole('button', { name: 'Провести возврат' }).click();
+  const returned = await returnResponse;
+  expect(returned.status()).toBe(201);
+  const returnBody = await returned.json();
+  const returnable = await page.request.get(
+    '/api/v1/shipments/' + shipmentId + '/returnable',
+    { headers: { Authorization: 'Bearer ' + pickerToken } }
+  );
+  expect((await returnable.json()).items[0].returnable_qty).toBe(1);
+  const adminLogin = await page.request.post('/api/v1/auth/login', {
+    data: { email: 'admin@stockpilot.local',
+      password: process.env.DEMO_PASSWORD || 'DemoStock2026!' }
+  });
+  expect(adminLogin.status()).toBe(200);
+  const audit = await page.request.get(
+    '/api/v1/audit?after=0&limit=100&entityId=' + returnBody.id,
+    { headers: { Authorization: 'Bearer ' + (await adminLogin.json()).accessToken } }
+  );
+  expect(audit.status()).toBe(200);
+  expect((await audit.json()).items.some(row => row.action === 'return.post')).toBe(true);
   await logout(page);
 
   await authenticate(page, 'manager@stockpilot.local');
