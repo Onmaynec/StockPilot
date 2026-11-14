@@ -1,6 +1,6 @@
-# Как опубликовать GitHub Releases v0.1.0, v0.2.0 и v0.3.0
+# Публикация GitHub Releases — StockPilot v0.1.0–v0.4.0
 
-Код всех версий уже находится в репозитории. GitHub **не публикует Releases автоматически при создании коммитов**, поэтому необходимо создать GitHub Release отдельно.
+Релизы v0.1.0, v0.2.0 и v0.3.0 уже опубликованы владельцем репозитория. Для v0.4.0 исходный код слит в `main`, но запись GitHub Release создаётся отдельно: GitHub не публикует её автоматически по одному коммиту.
 
 ## Почему публикация не завершилась автоматически
 
@@ -39,7 +39,15 @@
 4. Описание: [docs/RELEASE_0.3.0.md](RELEASE_0.3.0.md), включая результаты CI и ограничения.
 5. Опубликуйте как обычный Release и выставьте **Latest**. Сборка является архивом исходного кода; готового exe-установщика нет.
 
-В разделе https://github.com/Onmaynec/StockPilot/releases должны появиться **три карточки**, а GitHub автоматически предоставит архивы `Source code (zip)` и `Source code (tar.gz)`. Готовых бинарных установщиков в этих версиях нет.
+### StockPilot v0.4.0
+
+1. Перейдите на https://github.com/Onmaynec/StockPilot/releases/new .
+2. Создайте тег `v0.4.0`. **Target**: `d55ab40` (полный SHA: `d55ab40246622101f49f83725297d26208e19607`) — точный коммит слияния PR #8.
+3. Название: `StockPilot v0.4.0 — Security & Operations`.
+4. Текст: [docs/RELEASE_0.4.0.md](RELEASE_0.4.0.md), включая важное требование сменить `.env` перед обновлением.
+5. Опубликуйте **обычный Release** (не Draft и не Prerelease), пометьте как Latest.
+
+В разделе https://github.com/Onmaynec/StockPilot/releases должны появиться **четыре карточки**, а GitHub автоматически предоставит архивы `Source code (zip)` и `Source code (tar.gz)`. Готовых бинарных установщиков в этих версиях нет.
 
 ## Вариант 2 — автоматизация одним запуском
 
@@ -47,7 +55,7 @@
 
 1. В GitHub Settings → Secrets and variables → Actions создайте repository secret `STOCKPILOT_RELEASE_TOKEN` с **fine-grained personal access token** для этого репозитория, выданным владельцем, с **Contents: Read and write** и **Workflows: Read and write**. Токен должен иметь минимально необходимый срок действия.
 2. В Actions выберите **Publish StockPilot releases** → **Run workflow** на `main`.
-3. Проверьте три записи в Releases и теги `v0.1.0`/`v0.2.0`/`v0.3.0`.
+3. Проверьте четыре записи в Releases и теги `v0.1.0`/`v0.2.0`/`v0.3.0`/`v0.4.0`.
 
 **Не вставляйте токен в чат, README, Issues или GitHub Actions YAML.** Если workflow завершится ошибкой, сохраняйте лог без секретов и проверяйте права токена. После публикации удалите или отзовите временный токен.
 
