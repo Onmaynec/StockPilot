@@ -78,7 +78,7 @@ def require(*roles):
 
 
 def warehouse_access(user, warehouse_id):
-    if user["role"] == "admin":
+    if user["role"] in {"admin", "director"}:
         return
     if str(warehouse_id) not in user["warehouses"]:
         error("WAREHOUSE_FORBIDDEN", "Нет доступа к выбранному складу", 403)

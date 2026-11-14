@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
 from .db import pool, request_id
+from .config import validate_runtime_config
 from .security import client_key, rate_exceeded
 from . import catalog, operations, inventory, account
 
@@ -24,13 +25,20 @@ LATENCY = Histogram("stockpilot_http_duration_seconds", "Request duration", ["me
 
 @asynccontextmanager
 async def lifespan(app):
+    config = validate_runtime_config()
     pool.open(wait=True)
-    yield
-    pool.close()
+    try:
+        if config["environment"] == "production":
+            from .security_check import inspect_runtime_role
+            with pool.connection() as connection:
+                inspect_runtime_role(connection)
+        yield
+    finally:
+        pool.close()
 
 
 app = FastAPI(
-    title="StockPilot WMS", version="0.9.0",
+    title="StockPilot WMS", version="1.0.0",
     description="Transactional multi-warehouse inventory API. Errors include requestId.",
     lifespan=lifespan,
 )

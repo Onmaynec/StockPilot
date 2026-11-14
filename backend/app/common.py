@@ -44,7 +44,7 @@ def check_lot(c, lot_id, product_id):
 
 def order_access(c, order_id, user):
     order = require_row(c, "orders", order_id)
-    if user["role"] != "admin":
+    if user["role"] not in {"admin", "director"}:
         warehouses = c.execute(
             "SELECT DISTINCT warehouse_id FROM order_lines WHERE order_id=%s", (order_id,)
         ).fetchall()

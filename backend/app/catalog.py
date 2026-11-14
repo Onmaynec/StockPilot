@@ -2,6 +2,7 @@
 import csv
 import io
 import os
+import re
 from collections import Counter
 from datetime import datetime, timezone
 from uuid import UUID
@@ -16,11 +17,22 @@ from .common import check_bin, check_lot, clean, require_row
 from .db import all_rows, audit, error, locations, lock_stock, one, pool, stock_total
 
 router = APIRouter()
+EMAIL_PATTERN = re.compile(
+    r"^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
+)
+
+
+def normalize_email(value):
+    email = value.strip().lower()
+    if not EMAIL_PATTERN.fullmatch(email):
+        error("INVALID_EMAIL", "Укажите корректный адрес электронной почты")
+    return email
 
 
 class Login(BaseModel):
-    email: str
-    password: str
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=1, max_length=128)
 
 
 class ProductIn(BaseModel):
@@ -56,10 +68,10 @@ class LotIn(BaseModel):
 
 
 class UserIn(BaseModel):
-    email: str
-    fullName: str
+    email: str = Field(min_length=3, max_length=254)
+    fullName: str = Field(min_length=1, max_length=120)
     role: str
-    password: str = Field(min_length=12)
+    password: str = Field(min_length=12, max_length=128)
     warehouseIds: list[UUID] = Field(default_factory=list)
 
 
@@ -77,8 +89,9 @@ class CsvPayload(BaseModel):
 
 @router.post("/auth/login", tags=["Auth"])
 def login(data: Login):
+    email = data.email.strip().lower()
     with pool.connection() as c:
-        user = one(c, "SELECT * FROM users WHERE lower(email)=lower(%s)", (data.email,))
+        user = one(c, "SELECT * FROM users WHERE email=%s", (email,))
         if not user or not user["active"] or not verify_password(data.password, user["password_hash"]):
             error("BAD_CREDENTIALS", "Неверная почта или пароль", 401)
         return {"accessToken": issue_token(user), "tokenType": "bearer"}
@@ -93,12 +106,16 @@ def me(user=Depends(current_user)):
 def add_user(data: UserIn, user=Depends(require("admin"))):
     if data.role not in {"admin", "manager", "picker", "supervisor", "director"}:
         error("INVALID_ROLE", "Недопустимая роль")
+    email = normalize_email(data.email)
+    full_name = data.fullName.strip()
+    if not full_name:
+        error("VALIDATION_ERROR", "Укажите имя сотрудника")
     try:
         with pool.connection() as c, c.transaction():
             row = one(c, """
               INSERT INTO users(email,password_hash,role,full_name)
-              VALUES(lower(%s),%s,%s,%s) RETURNING id,email,role,full_name
-            """, (data.email, hash_password(data.password), data.role, data.fullName))
+              VALUES(%s,%s,%s,%s) RETURNING id,email,role,full_name
+            """, (email, hash_password(data.password), data.role, full_name))
             for warehouse in set(data.warehouseIds):
                 require_row(c, "warehouses", warehouse)
                 c.execute("INSERT INTO user_warehouses VALUES(%s,%s)", (row["id"], warehouse))
@@ -264,7 +281,7 @@ def warehouses(user=Depends(current_user)):
         rows = all_rows(c, """
           SELECT id,code,name,active FROM warehouses
           WHERE %s OR id=ANY(%s::uuid[]) ORDER BY code
-        """, (user["role"] == "admin", user["warehouses"]))
+        """, (user["role"] in ("admin", "director"), user["warehouses"]))
         return clean(rows)
 
 
@@ -280,7 +297,7 @@ def zones(warehouseId: str, user=Depends(current_user)):
 
 
 @router.get("/suppliers", tags=["Catalog"])
-def suppliers(user=Depends(current_user)):
+def suppliers(user=Depends(require("admin", "manager", "supervisor", "director"))):
     with pool.connection() as c:
         return clean(all_rows(c, "SELECT id,name,contact FROM suppliers ORDER BY name LIMIT 500"))
 
@@ -415,7 +432,7 @@ def stocks(sku: str = "", warehouseId: str | None = None,
           ) b ON TRUE
           ORDER BY s.sku,s.warehouse_code
         """, (sku, f"%{sku}%", f"%{sku}%", warehouseId, warehouseId,
-              user["role"] == "admin", user["warehouses"], limit, (page - 1) * limit))
+              user["role"] in ("admin", "director"), user["warehouses"], limit, (page - 1) * limit))
         return {"items": clean(rows), "total": rows[0]["total"] if rows else 0,
                 "page": page, "limit": limit}
 
@@ -584,7 +601,7 @@ def movements(sku: str = "", warehouseId: str | None = None,
             AND (%s OR m.warehouse_id=ANY(%s::uuid[]))
           ORDER BY m.id DESC LIMIT %s OFFSET %s
         """, (sku, f"%{sku}%", warehouseId, warehouseId,
-              lotId, lotId, documentId, documentId, user["role"] == "admin",
+              lotId, lotId, documentId, documentId, user["role"] in ("admin", "director"),
               user["warehouses"], limit, (page - 1) * limit))
         return {"items": clean(rows), "total": rows[0]["total"] if rows else 0,
                 "page": page, "limit": limit}
@@ -595,7 +612,13 @@ def csv_response(rows, fields, filename):
     writer = csv.writer(output)
     writer.writerow(fields)
     for row in rows:
-        writer.writerow([row.get(key, "") for key in fields])
+        values = []
+        for key in fields:
+            value = row.get(key, "")
+            if isinstance(value, str) and value.lstrip(" \t\r\n")[:1] in {"=", "+", "-", "@"}:
+                value = "'" + value
+            values.append(value)
+        writer.writerow(values)
     return Response(content="\ufeff" + output.getvalue(), media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="{filename}"',
                              "Cache-Control": "no-store"})
@@ -645,7 +668,7 @@ def export_stocks(warehouseId: str | None = None, user=Depends(current_user)):
           WHERE (%s::uuid IS NULL OR g.warehouse_id=%s::uuid)
             AND (%s OR g.warehouse_id=ANY(%s::uuid[]))
           ORDER BY p.sku,w.code LIMIT 50000
-        """, (warehouseId, warehouseId, user["role"] == "admin", user["warehouses"]))
+        """, (warehouseId, warehouseId, user["role"] in ("admin", "director"), user["warehouses"]))
     return csv_response(rows, ["sku","warehouse","physical","reserved","blocked","available"],
                         "stockpilot-stocks.csv")
 
@@ -694,6 +717,6 @@ def stock_anomalies(warehouseId: str | None = None, limit: int = 100,
           JOIN bins b ON b.id=t.bin_id JOIN lots l ON l.id=t.lot_id
           WHERE t.physical < 0 OR t.physical < t.reserved+t.blocked
           ORDER BY p.sku,w.code,b.code,l.code LIMIT %s
-        """, (warehouseId, warehouseId, user["role"] == "admin",
+        """, (warehouseId, warehouseId, user["role"] in ("admin", "director"),
               user["warehouses"], limit))
         return {"total": rows[0]["total"] if rows else 0, "items": clean(rows)}

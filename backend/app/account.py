@@ -9,7 +9,7 @@ router = APIRouter()
 
 
 class ChangePassword(BaseModel):
-    currentPassword: str = Field(min_length=1)
+    currentPassword: str = Field(min_length=1, max_length=128)
     newPassword: str = Field(min_length=12, max_length=128)
 
 

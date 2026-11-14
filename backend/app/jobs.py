@@ -5,6 +5,7 @@ import os
 import time
 
 from .db import all_rows, audit, lock_stock, one, outbox, pool
+from .config import validate_runtime_config
 from .security import cleanup_rate_limits
 
 log = logging.getLogger(__name__)
@@ -91,8 +92,13 @@ def dispatch_outbox_once(limit=100):
 
 def run():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    config = validate_runtime_config()
     pool.open(wait=True)
     try:
+        if config["environment"] == "production":
+            from .security_check import inspect_runtime_role
+            with pool.connection() as connection:
+                inspect_runtime_role(connection)
         while True:
             try:
                 expired = expire_once()
