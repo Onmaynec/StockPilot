@@ -73,6 +73,9 @@ jobs:
           docker compose run --rm backup /bin/sh /scripts/backup_rotate.sh | tee backup-report.json
           test "$(find backups -maxdepth 1 -name 'stockpilot-*.dump' | wc -l)" -eq 1
           archive="$(find backups -maxdepth 1 -name 'stockpilot-*.dump' | head -n1)"
+          echo "Backup directory content after container exits:"
+          ls -la backups
+          echo "Archive picked for integrity check: $archive"
           (cd backups && sha256sum --check "$(basename "$archive").sha256")
       - name: Reject a corrupted backup archive
         run: |
