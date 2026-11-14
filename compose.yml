@@ -68,6 +68,8 @@ services:
   backup:
     image: postgres:16-alpine
     profiles: ["backup"]
+    # Backup files are private and owned by the host backup operator, not root.
+    user: "${BACKUP_UID:-1000}:${BACKUP_GID:-1000}"
     restart: unless-stopped
     depends_on:
       db:

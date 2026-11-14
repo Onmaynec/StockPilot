@@ -50,6 +50,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: cp .env.example .env
+      - name: Give the backup container the CI runner's unprivileged UID/GID
+        run: |
+          sed -i "/^BACKUP_UID=/d; /^BACKUP_GID=/d" .env
+          printf 'BACKUP_UID=%s\nBACKUP_GID=%s\n' "$(id -u)" "$(id -g)" >> .env
       - run: docker compose config -q
       - run: docker compose --profile backup config -q
       - run: docker compose -f compose.recovery.yml config -q

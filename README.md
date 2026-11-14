@@ -162,6 +162,7 @@ docker compose exec -T api python -m app.security_check
 
 ```bash
 mkdir -p backups && chmod 700 backups
+# Для Linux задайте в .env BACKUP_UID/BACKUP_GID согласно id -u / id -g
 docker compose --profile backup up -d backup
 docker compose logs -f backup
 ```
