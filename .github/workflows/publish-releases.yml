@@ -1,4 +1,4 @@
-name: Publish StockPilot 0.1.0 and 0.2.0 releases
+name: Publish StockPilot releases
 
 on:
   workflow_dispatch:
@@ -33,6 +33,10 @@ jobs:
             git tag v0.2.0 1cc94c2fb0d7303f15f38998e012a4c0b302e2fa
             git push origin refs/tags/v0.2.0
           fi
+          if ! git ls-remote --tags --exit-code origin refs/tags/v0.3.0 >/dev/null 2>&1; then
+            git tag v0.3.0 1f7346e80a03fc8333fd1eee87e65013d5e56edc
+            git push origin refs/tags/v0.3.0
+          fi
       - name: Publish v0.1.0 from its source commit
         env:
           GH_TOKEN: ${{ secrets.STOCKPILOT_RELEASE_TOKEN }}
@@ -58,9 +62,23 @@ jobs:
               --notes-file docs/RELEASE_0.2.0.md \
               --latest
           fi
-      - name: Verify both public releases
+      - name: Publish v0.3.0 from verified code
+        env:
+          GH_TOKEN: ${{ secrets.STOCKPILOT_RELEASE_TOKEN }}
+        run: |
+          if gh release view v0.3.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v0.3.0 already exists; leaving it unchanged"
+          else
+            gh release create v0.3.0 --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "StockPilot v0.3.0 — Inventory Accuracy & Reliability" \
+              --notes-file docs/RELEASE_0.3.0.md \
+              --latest
+          fi
+      - name: Verify three public releases
         env:
           GH_TOKEN: ${{ secrets.STOCKPILOT_RELEASE_TOKEN }}
         run: |
           gh release view v0.1.0 --repo "$GITHUB_REPOSITORY" --json tagName,url,isDraft,isPrerelease
           gh release view v0.2.0 --repo "$GITHUB_REPOSITORY" --json tagName,url,isDraft,isPrerelease
+          gh release view v0.3.0 --repo "$GITHUB_REPOSITORY" --json tagName,url,isDraft,isPrerelease
