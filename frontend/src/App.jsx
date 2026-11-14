@@ -218,6 +218,7 @@ export default function App() {
   const [zoneOptions, setZoneOptions] = useState([]);
   const [detail, setDetail] = useState(null);
   const [pickFilter, setPickFilter] = useState('active');
+  const [adminRefresh, setAdminRefresh] = useState(0);
 
   const current = NAV.find(item => item.id === screen) || NAV[0];
   const isAdmin = user?.role === 'admin';
@@ -460,8 +461,9 @@ export default function App() {
           <h1>{current.label}</h1><p>{screen === 'dashboard'
             ? 'Ключевые показатели и события складского контура.'
             : 'Актуальные данные из транзакционной системы учёта.'}</p></div>
-          <div className="page-actions"><Btn icon={RefreshCw} onClick={reload} disabled={loading}>
-            Обновить</Btn></div></div>
+          <div className="page-actions"><Btn icon={RefreshCw}
+            onClick={() => screen === 'admin' ? setAdminRefresh(x => x + 1) : reload()}
+            disabled={loading}>Обновить</Btn></div></div>
 
         {screen === 'dashboard' && <>
           <div className="stats-grid">
@@ -651,6 +653,7 @@ export default function App() {
         </>}
 
         {screen === 'admin' && isAdmin && <AdminConsole api={api} warehouses={warehouses}
+          currentUserId={user.id} refreshToken={adminRefresh}
           onNotify={alertMessage} onWarehousesChanged={async () => {
             const next = await api('GET', '/warehouses');
             setWarehouses(next);

@@ -31,7 +31,8 @@ function WarehouseChoices({ warehouses, selected, onChange }) {
   </div>;
 }
 
-export function AdminConsole({ api, warehouses, onWarehousesChanged, onNotify }) {
+export function AdminConsole({ api, warehouses, onWarehousesChanged, onNotify,
+  currentUserId, refreshToken }) {
   const [tab, setTab] = useState('users');
   const [users, setUsers] = useState([]);
   const [zones, setZones] = useState([]);
@@ -75,7 +76,7 @@ export function AdminConsole({ api, warehouses, onWarehousesChanged, onNotify })
     let active = true;
     refresh().catch(e => { if (active) setError(e.message); });
     return () => { active = false; };
-  }, [refresh]);
+  }, [refresh, refreshToken]);
 
   useEffect(() => {
     if (tab !== 'lots') return;
@@ -180,8 +181,10 @@ export function AdminConsole({ api, warehouses, onWarehousesChanged, onNotify })
               setEditing(editing === employee.id ? '' : employee.id);
               setDraft(employee.warehouse_ids || []);
             }}>Складские права</Action>
-            <Action secondary disabled={busy} onClick={() => changeStatus(employee)}>
-              {employee.active ? 'Заблокировать' : 'Разблокировать'}</Action>
+            <Action secondary disabled={busy || employee.id === currentUserId}
+              onClick={() => changeStatus(employee)}>
+              {employee.id === currentUserId ? 'Своя учётная запись' :
+                employee.active ? 'Заблокировать' : 'Разблокировать'}</Action>
           </div>
           {editing === employee.id && <div className="admin-grants">
             <strong>Склады сотрудника</strong>
