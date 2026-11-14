@@ -70,7 +70,7 @@ jobs:
           cp .env.example .env
           docker compose up -d --build --wait --wait-timeout 180
           docker compose exec -T api python -m app.seed
-      - name: Browser tests: mobile Chromium and desktop Firefox
+      - name: Browser E2E - mobile Chromium and desktop Firefox
         run: cd frontend && npm run test:e2e
         env:
           CI: '1'
