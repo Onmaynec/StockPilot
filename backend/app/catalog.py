@@ -530,3 +530,52 @@ def export_stocks(warehouseId: str | None = None, user=Depends(current_user)):
         """, (warehouseId, warehouseId, user["role"] == "admin", user["warehouses"]))
     return csv_response(rows, ["sku","warehouse","physical","reserved","blocked","available"],
                         "stockpilot-stocks.csv")
+
+
+@router.get("/stocks/anomalies", tags=["Stocks"])
+def stock_anomalies(warehouseId: str | None = None, limit: int = 100,
+                    user=Depends(require("admin", "supervisor", "director"))):
+    """Report negative inventory and overallocated positions (no auto-correction)."""
+    if warehouseId:
+        warehouse_access(user, warehouseId)
+    limit = max(1, min(limit, 200))
+    with pool.connection() as c:
+        rows = all_rows(c, """
+          WITH quantities AS (
+            SELECT product_id,warehouse_id,bin_id,lot_id,
+                   SUM(qty)::bigint AS physical, 0::bigint AS reserved,0::bigint AS blocked
+            FROM stock_movements GROUP BY product_id,warehouse_id,bin_id,lot_id
+            UNION ALL
+            SELECT product_id,warehouse_id,bin_id,lot_id,0::bigint,
+                   SUM(qty-shipped_qty)::bigint,0::bigint
+            FROM reservations WHERE status='active'
+            GROUP BY product_id,warehouse_id,bin_id,lot_id
+            UNION ALL
+            SELECT product_id,warehouse_id,bin_id,lot_id,0::bigint,0::bigint,
+                   SUM(qty)::bigint FROM stock_blocks WHERE active
+            GROUP BY product_id,warehouse_id,bin_id,lot_id
+          ),
+          totals AS (
+            SELECT product_id,warehouse_id,bin_id,lot_id,
+                   SUM(physical)::bigint AS physical,
+                   SUM(reserved)::bigint AS reserved,
+                   SUM(blocked)::bigint AS blocked
+            FROM quantities
+            WHERE (%s::uuid IS NULL OR warehouse_id=%s::uuid)
+              AND (%s OR warehouse_id=ANY(%s::uuid[]))
+            GROUP BY product_id,warehouse_id,bin_id,lot_id
+          )
+          SELECT p.sku,w.code AS warehouse,b.code AS bin,l.code AS lot,
+                 t.physical,t.reserved,t.blocked,
+                 (t.physical-t.reserved-t.blocked) AS available,
+                 CASE WHEN t.physical < 0 THEN 'NEGATIVE_PHYSICAL'
+                      ELSE 'OVERALLOCATED' END AS issue,
+                 COUNT(*) OVER()::int AS total
+          FROM totals t JOIN products p ON p.id=t.product_id
+          JOIN warehouses w ON w.id=t.warehouse_id
+          JOIN bins b ON b.id=t.bin_id JOIN lots l ON l.id=t.lot_id
+          WHERE t.physical < 0 OR t.physical < t.reserved+t.blocked
+          ORDER BY p.sku,w.code,b.code,l.code LIMIT %s
+        """, (warehouseId, warehouseId, user["role"] == "admin",
+              user["warehouses"], limit))
+        return {"total": rows[0]["total"] if rows else 0, "items": clean(rows)}

@@ -10,6 +10,7 @@ import {
 const NAV = [
   { id: 'dashboard', label: 'Обзор', icon: LayoutDashboard },
   { id: 'stocks', label: 'Остатки', icon: Boxes },
+  { id: 'anomalies', label: 'Контроль остатков', icon: ShieldCheck },
   { id: 'products', label: 'Номенклатура', icon: Package },
   { id: 'receipts', label: 'Поступления', icon: ArrowDownLeft },
   { id: 'orders', label: 'Заказы', icon: ClipboardList },
@@ -265,6 +266,8 @@ export default function App() {
       else {
         const paths = {
           stocks: '/stocks?' + queryStr,
+          anomalies: '/stocks/anomalies' + (warehouseId
+            ? '?warehouseId=' + encodeURIComponent(warehouseId) : ''),
           products: '/products?q=' + encodeURIComponent(appliedSearch) + '&page=' + page,
           receipts: '/receipts', orders: '/orders', picks: '/picks' + (warehouseId ? '?warehouseId=' + warehouseId : ''),
           shipments: '/shipments', transfers: '/transfers',
@@ -313,6 +316,9 @@ export default function App() {
         setForm({ items: receipt.items.map(line => ({
           lineId: line.id, actualQty: line.planned_qty, reason: ''
         })) });
+      }
+      if (type === 'inventory-variance') {
+        setDetail(await api('GET', '/inventory/' + item.id + '/variance'));
       }
       if (type === 'inventory-count') {
         const count = await api('GET', '/inventory/' + item.id);
@@ -419,8 +425,8 @@ export default function App() {
         <div><strong>NordTrade</strong><small>Складская платформа</small></div><ChevronDown size={15} /></div>
       <div className="nav-caption">РАБОЧЕЕ ПРОСТРАНСТВО</div>
       <nav className="side-nav">{NAV.filter(n => {
-        if (user.role === 'director') return ['dashboard', 'audit', 'inventory', 'stocks', 'products'].includes(n.id);
-        if (n.id === 'audit') return ['admin', 'supervisor'].includes(user.role);
+        if (user.role === 'director') return ['dashboard', 'audit', 'inventory', 'stocks', 'products', 'anomalies'].includes(n.id);
+        if (['audit', 'anomalies'].includes(n.id)) return ['admin', 'supervisor', 'director'].includes(user.role);
         if (n.id === 'import') return user.role === 'admin';
         return true;
       }).map(item => {
@@ -430,7 +436,7 @@ export default function App() {
           <span>{item.label}</span>{screen === item.id && <span className="nav-indicator" />}</button>;
       })}</nav>
       <div className="sidebar-bottom"><div className="system-status"><span className="live-indicator" />
-        Серверная проверка операций</div><div className="version">STOCKPILOT WMS <span>v0.2.0</span></div></div>
+        Серверная проверка операций</div><div className="version">STOCKPILOT WMS <span>v0.3.0</span></div></div>
     </aside>
 
     <main className="main">
@@ -490,16 +496,18 @@ export default function App() {
         </>}
 
         {['stocks', 'products', 'receipts', 'orders', 'picks', 'shipments', 'transfers',
-          'inventory', 'audit'].includes(screen) && <>
+          'inventory', 'audit', 'anomalies'].includes(screen) && <>
           <div className="panel data-panel">
             <SectionHeader title={{
-              stocks: 'Доступные остатки', products: 'Каталог товаров',
+              stocks: 'Доступные остатки', anomalies: 'Контроль аномалий остатков',
+              products: 'Каталог товаров',
               receipts: 'Документы приёмки', orders: 'Клиентские заказы',
               picks: 'Очередь комплектации', shipments: 'Документы отгрузки',
               transfers: 'Складские перемещения', inventory: 'Акты пересчёта',
               audit: 'История изменений'
             }[screen]} subtitle={{
               stocks: 'Физический · Резерв · Блокировка · Доступно',
+              anomalies: 'Отрицательные и чрезмерно зарезервированные позиции; только диагностика',
               products: 'SKU, штрихкоды и политики FIFO / FEFO',
               receipts: 'План и факт отражаются раздельно',
               orders: 'Резервы и смена статусов',
@@ -529,11 +537,11 @@ export default function App() {
                   onKeyDown={e => e.key === 'Enter' && (setPage(1), setAppliedSearch(search))} />
                   <button onClick={() => { setAppliedSearch(search); setPage(1); }}><ChevronRight size={17} /></button></div>
               </>}
-              {['stocks', 'picks'].includes(screen) && <select className="warehouse-filter" value={warehouseId}
+              {['stocks', 'picks', 'anomalies'].includes(screen) && <select className="warehouse-filter" value={warehouseId}
                 onChange={e => setWarehouseId(e.target.value)}>
                 <option value="">Все склады</option>{warehouses.map(w =>
                   <option key={w.id} value={w.id}>{w.code} / {w.name}</option>)}</select>}
-              <span className="list-count">{screen === 'products' || screen === 'stocks'
+              <span className="list-count">{screen === 'products' || screen === 'stocks' || screen === 'anomalies'
                 ? quantity(total) + ' записей' : rows.length + ' записей'}</span>
             </div>
             {screen === 'picks'
@@ -569,6 +577,8 @@ export default function App() {
               : <div className="table-wrapper"><table><thead><tr>
                   {({
                     stocks: ['Товар', 'Склад', 'Физически', 'Резерв', 'Блок', 'Доступно'],
+                    anomalies: ['SKU', 'Склад', 'Ячейка / партия', 'Физически',
+                      'Резерв / Блок', 'Доступно', 'Отклонение'],
                     products: ['SKU', 'Наименование', 'Категория', 'Политика', 'Состояние'],
                     receipts: ['Документ', 'Создан', 'Статус', 'Действия'],
                     orders: ['Заказ', 'Клиент', 'Создан', 'Статус', 'Действия'],
@@ -582,6 +592,13 @@ export default function App() {
                       <td><strong>{r.sku}</strong><small>{r.name}</small></td><td>{r.warehouse}</td>
                       <td>{quantity(r.physical)}</td><td>{quantity(r.reserved)}</td>
                       <td>{quantity(r.blocked)}</td><td><strong className={r.available <= 0 ? 'negative' : 'positive'}>{quantity(r.available)}</strong></td></>}
+                    {screen === 'anomalies' && <>
+                      <td><strong>{r.sku}</strong></td><td>{r.warehouse}</td>
+                      <td><strong>{r.bin}</strong><small>{r.lot}</small></td>
+                      <td>{r.physical}</td><td>{r.reserved} / {r.blocked}</td>
+                      <td><strong className="negative">{r.available}</strong></td>
+                      <td><span className="status danger">{r.issue === 'NEGATIVE_PHYSICAL'
+                        ? 'Отрицательный остаток' : 'Превышен доступный остаток'}</span></td></>}
                     {screen === 'products' && <>
                       <td><strong>{r.sku}</strong><small>{r.barcode || 'Нет штрихкода'}</small></td>
                       <td>{r.name}</td><td>{r.category}</td><td><span className="tag">{r.pick_policy}</span></td>
@@ -610,7 +627,9 @@ export default function App() {
                     {screen === 'inventory' && <>
                       <td><strong>IC-{short(r.id)}</strong></td><td>{r.zone_code}</td>
                       <td>{date(r.created_at)}</td><td><Pill status={r.status} /></td>
-                      <td><div className="table-actions">{r.status === 'counting' && canOperate &&
+                      <td><div className="table-actions">
+                        <Btn onClick={() => openForm('inventory-variance', r)}>Расхождения</Btn>
+                        {r.status === 'counting' && canOperate &&
                         <Btn onClick={() => openForm('inventory-count', r)}>Внести факт</Btn>}
                         {r.status === 'counting' && canOperate &&
                           <Btn disabled={busy} onClick={() => action('POST', '/inventory/' + r.id + '/submit', {})}>Отправить</Btn>}
@@ -657,10 +676,29 @@ export default function App() {
           product: 'Новый товар', receipt: 'Создать приёмку', order: 'Новый заказ',
           transfer: 'Новое перемещение', count: 'Инвентаризация',
           return: 'Возврат отгрузки', 'receipt-confirm': 'Подтверждение приёмки',
-          'inventory-count': 'Внести фактический остаток', 'order-detail': 'Детали заказа',
+          'inventory-count': 'Внести фактический остаток',
+          'inventory-variance': 'Сводка расхождений', 'order-detail': 'Детали заказа',
           security: 'Безопасность учётной записи'
         }[modal.type])}</h2></div><button className="icon-btn" onClick={() => setModal(null)}><X size={20} /></button></div>
-        {modal.type === 'order-detail' ? <div className="modal-body">
+        {modal.type === 'inventory-variance' ? <div className="modal-body">
+          {!detail ? <p>Загрузка акта…</p> : <>
+            <div className="variance-kpis">
+              <div><span>Расхождения</span><strong>{detail.discrepancyLines}</strong></div>
+              <div><span>Разница, шт.</span><strong>{detail.deltaQty}</strong></div>
+              <div><span>Не пересчитано</span><strong>{detail.unentered}</strong></div>
+            </div>
+            {detail.staleSnapshot && <div className="error-note">
+              После создания акта в зоне появились движения. Утверждение будет отклонено.
+              Необходимо провести новый пересчёт.</div>}
+            {detail.items.map(line => <div className="detail-row" key={line.id}>
+              <span>{line.sku} · {line.bin} / {line.lot}</span>
+              <strong>{line.snapshot_qty} → {line.actual_qty ?? '—'}
+                {line.delta === null ? '' : ' (' + (line.delta > 0 ? '+' : '') + line.delta + ')'}</strong>
+            </div>)}
+            {!detail.items.length && <p>В зоне пока нет учётных строк.</p>}
+            <div className="modal-buttons"><Btn onClick={() => setModal(null)}>Закрыть</Btn></div>
+          </>}
+        </div> : modal.type === 'order-detail' ? <div className="modal-body">
           <div className="detail-meta">Статус: <Pill status={detail?.order?.status} /></div>
           <h3>Позиции заказа</h3>{detail?.items?.map(l => <div className="detail-row" key={l.id}>
             <span>{l.sku} · {l.warehouse}</span><strong>{l.qty} шт.</strong></div>)}
