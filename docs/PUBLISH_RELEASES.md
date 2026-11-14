@@ -74,7 +74,7 @@
 ### StockPilot v0.8.0
 
 1. Откройте https://github.com/Onmaynec/StockPilot/releases/new .
-2. Создайте тег `v0.8.0`, Target — **`fd94880`** (полный SHA `fd9488073eee9a8f11afc90f1fc4b3f87cb42c8f`, итоговый коммит PR #12).
+2. Создайте тег `v0.8.0`, Target — **`41f3c16`** (полный SHA `41f3c16120036e74adede750e134e77306cef0a9`, проверенный коммит v0.8.0 с исправлением сортировки отгрузок после слияния PR #12).
 3. Название: `StockPilot v0.8.0 — Mobile Picking & Assignment`.
 4. Текст описания возьмите из [docs/RELEASE_0.8.0.md](RELEASE_0.8.0.md); не объявляйте AT-12 завершённым без приёмки на физическом смартфоне.
 5. Опубликуйте обычный Release (не Draft и не Prerelease), отметьте Latest. Это архивы Docker/исходного кода, не EXE.

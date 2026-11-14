@@ -39,4 +39,11 @@
 Сделайте резервную копию PostgreSQL, выполните `git pull origin main` и `docker compose up -d --build`. Новых SQL-миграций поверх v0.7.0 нет. Повторная авторизация на общем устройстве очищает предыдущие временные черновики.
 
 
-**Точный коммит выпуска:** `fd9488073eee9a8f11afc90f1fc4b3f87cb42c8f` (короткий `fd94880`), [PR #12](https://github.com/Onmaynec/StockPilot/pull/12). CI финального коммита ветки с обновлённой документацией: [#43566195559](https://github.com/Onmaynec/StockPilot/actions/runs/43566195559) — все 4 job успешны. Публикация GitHub Release является отдельным шагом владельца репозитория.
+**Точный коммит выпуска:** `41f3c16120036e74adede750e134e77306cef0a9` (короткий `41f3c16`), [PR #12](https://github.com/Onmaynec/StockPilot/pull/12). CI финального коммита ветки с обновлённой документацией: [#43566195559](https://github.com/Onmaynec/StockPilot/actions/runs/43566195559) — все 4 job успешны. Публикация GitHub Release является отдельным шагом владельца репозитория.
+
+
+### Исправление после слияния PR #12
+
+Очередь `GET /api/v1/shipments` теперь отсортирована по `orders.created_at DESC`, а не по случайному значению UUID. До изменения существующий браузерный тест выбирал первую отгрузку и мог отгрузить другой заказ, если новый E2E оставлял свой заказ на статусе `picked`. Исправление стабилизирует отображение очереди; отдельный серверный тест `test_shipment_queue_displays_newest_order_first` проверяет сортировку.
+
+[CI #43566886776](https://github.com/Onmaynec/StockPilot/actions/runs/43566886776) — **все 4 job успешны: 31 backend-тест, 8 Playwright E2E, React build, Docker Compose**. Публикация GitHub Release v0.8.0 должна указывать на `41f3c16`, а не на более ранний merge-коммит `fd94880`.
