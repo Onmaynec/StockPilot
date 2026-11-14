@@ -1,6 +1,6 @@
-# Публикация GitHub Releases — StockPilot v0.1.0–v0.8.0
+# Публикация GitHub Releases — StockPilot v0.1.0–v0.9.0
 
-Релизы v0.1.0–v0.4.0 опубликованы владельцем репозитория. Исходный код v0.5.0, v0.6.0, v0.7.0 и v0.8.0 уже слит в `main`; их GitHub Releases публикуются отдельно. Публикация кода не создаёт Release автоматически.
+Релизы v0.1.0–v0.4.0 опубликованы владельцем репозитория. Исходный код v0.5.0, v0.6.0, v0.7.0, v0.8.0 и v0.9.0 уже слит в `main`; их GitHub Releases публикуются отдельно. Публикация кода не создаёт Release автоматически.
 
 ## Почему публикация не завершилась автоматически
 
@@ -79,7 +79,15 @@
 4. Текст описания возьмите из [docs/RELEASE_0.8.0.md](RELEASE_0.8.0.md); не объявляйте AT-12 завершённым без приёмки на физическом смартфоне.
 5. Опубликуйте обычный Release (не Draft и не Prerelease), отметьте Latest. Это архивы Docker/исходного кода, не EXE.
 
-В разделе https://github.com/Onmaynec/StockPilot/releases должны появиться **восемь карточек**, а GitHub автоматически предоставит архивы `Source code (zip)` и `Source code (tar.gz)`. Готовых бинарных установщиков в этих версиях нет.
+### StockPilot v0.9.0
+
+1. Откройте https://github.com/Onmaynec/StockPilot/releases/new .
+2. Создайте тег `v0.9.0`, Target — **`655d664`** (полный SHA `655d664671f77fab743abce97edae9d5774b2e5b`, squash-коммит PR #13).
+3. Название: `StockPilot v0.9.0 — Performance & Scale`.
+4. Текст описания возьмите из [docs/RELEASE_0.9.0.md](RELEASE_0.9.0.md). В описании оставьте ограничения: AT-10 подтверждён на CI-профиле, но это не 24-часовой production soak.
+5. Опубликуйте обычный Release (не Draft и не Prerelease), отметьте Latest. Это исходный код и Docker-проект, не EXE.
+
+В разделе https://github.com/Onmaynec/StockPilot/releases должны появиться **девять карточек**, а GitHub автоматически предоставит архивы `Source code (zip)` и `Source code (tar.gz)`. Готовых бинарных установщиков в этих версиях нет.
 
 ## Вариант 2 — автоматизация одним запуском
 
@@ -87,7 +95,7 @@
 
 1. В GitHub Settings → Secrets and variables → Actions создайте repository secret `STOCKPILOT_RELEASE_TOKEN` с **fine-grained personal access token** для этого репозитория, выданным владельцем, с **Contents: Read and write** и **Workflows: Read and write**. Токен должен иметь минимально необходимый срок действия.
 2. В Actions выберите **Publish StockPilot releases** → **Run workflow** на `main`.
-3. Проверьте восемь записей в Releases и теги `v0.1.0`/`v0.2.0`/`v0.3.0`/`v0.4.0`/`v0.5.0`/`v0.6.0`/`v0.7.0`/`v0.8.0`.
+3. Проверьте девять записей в Releases и теги `v0.1.0`/`v0.2.0`/`v0.3.0`/`v0.4.0`/`v0.5.0`/`v0.6.0`/`v0.7.0`/`v0.8.0`/`v0.9.0`.
 
 **Не вставляйте токен в чат, README, Issues или GitHub Actions YAML.** Если workflow завершится ошибкой, сохраняйте лог без секретов и проверяйте права токена. После публикации удалите или отзовите временный токен.
 

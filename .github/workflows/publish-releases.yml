@@ -57,6 +57,10 @@ jobs:
             git tag v0.8.0 41f3c16120036e74adede750e134e77306cef0a9
             git push origin refs/tags/v0.8.0
           fi
+          if ! git ls-remote --tags --exit-code origin refs/tags/v0.9.0 >/dev/null 2>&1; then
+            git tag v0.9.0 655d664671f77fab743abce97edae9d5774b2e5b
+            git push origin refs/tags/v0.9.0
+          fi
       - name: Publish v0.1.0 from its source commit
         env:
           GH_TOKEN: ${{ secrets.STOCKPILOT_RELEASE_TOKEN }}
@@ -160,7 +164,20 @@ jobs:
               --notes-file docs/RELEASE_0.8.0.md \
               --latest
           fi
-      - name: Verify eight public releases
+      - name: Publish v0.9.0 from verified code
+        env:
+          GH_TOKEN: ${{ secrets.STOCKPILOT_RELEASE_TOKEN }}
+        run: |
+          if gh release view v0.9.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v0.9.0 already exists; leaving it unchanged"
+          else
+            gh release create v0.9.0 --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "StockPilot v0.9.0 — Performance & Scale" \
+              --notes-file docs/RELEASE_0.9.0.md \
+              --latest
+          fi
+      - name: Verify nine public releases
         env:
           GH_TOKEN: ${{ secrets.STOCKPILOT_RELEASE_TOKEN }}
         run: |
@@ -172,3 +189,4 @@ jobs:
           gh release view v0.6.0 --repo "$GITHUB_REPOSITORY" --json tagName,url,isDraft,isPrerelease
           gh release view v0.7.0 --repo "$GITHUB_REPOSITORY" --json tagName,url,isDraft,isPrerelease
           gh release view v0.8.0 --repo "$GITHUB_REPOSITORY" --json tagName,url,isDraft,isPrerelease
+          gh release view v0.9.0 --repo "$GITHUB_REPOSITORY" --json tagName,url,isDraft,isPrerelease
