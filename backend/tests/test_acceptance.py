@@ -771,3 +771,44 @@ def test_stock_page_respects_warehouse_access_and_pagination(env):
             [admin_page1.json()["items"][0],admin_page2.json()["items"][0]]} == {
                 ids["warehouse"], other_warehouse
             }
+
+
+
+def test_mixed_warehouse_documents_hidden_from_partial_scope(env):
+    client, users, ids = env
+    with pool.connection() as c, c.transaction():
+        other_warehouse, other_zone, other_bin = (
+            str(uuid4()),str(uuid4()),str(uuid4()))
+        c.execute("INSERT INTO warehouses(id,code,name) VALUES(%s,'W2','Ограниченный склад')",
+                  (other_warehouse,))
+        c.execute("INSERT INTO zones(id,warehouse_id,code,name) VALUES(%s,%s,'A','Зона 2')",
+                  (other_zone,other_warehouse))
+        c.execute("INSERT INTO bins(id,warehouse_id,zone_id,code) VALUES(%s,%s,%s,'A-01')",
+                  (other_bin,other_warehouse,other_zone))
+    receipt_response = client.post("/api/v1/receipts",headers=users["admin"],
+                                   json={"items":[
+        {"productId":ids["product"],"binId":ids["bin"],
+         "lotId":ids["lot"],"plannedQty":1},
+        {"productId":ids["product"],"binId":other_bin,
+         "lotId":ids["lot"],"plannedQty":1}
+    ]})
+    assert receipt_response.status_code == 201,receipt_response.text
+    receipt_id = receipt_response.json()["id"]
+    manager_receipts = client.get("/api/v1/receipts",headers=users["manager"])
+    assert manager_receipts.status_code == 200
+    assert receipt_id not in {r["id"] for r in manager_receipts.json()}
+    assert client.get("/api/v1/receipts/" + receipt_id,
+                      headers=users["manager"]).status_code == 403
+    admin_receipts = client.get("/api/v1/receipts",headers=users["admin"])
+    assert receipt_id in {r["id"] for r in admin_receipts.json()}
+
+    transfer_response = client.post("/api/v1/transfers",headers=users["admin"],
+                                    json={"productId":ids["product"],"lotId":ids["lot"],
+        "fromBinId":ids["bin"],"toBinId":other_bin,"qty":1})
+    assert transfer_response.status_code == 201,transfer_response.text
+    transfer_id = transfer_response.json()["id"]
+    picker_transfers = client.get("/api/v1/transfers",headers=users["picker"])
+    assert picker_transfers.status_code == 200
+    assert transfer_id not in {r["id"] for r in picker_transfers.json()}
+    admin_transfers = client.get("/api/v1/transfers",headers=users["admin"])
+    assert transfer_id in {r["id"] for r in admin_transfers.json()}
