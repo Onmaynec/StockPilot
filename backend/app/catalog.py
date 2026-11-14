@@ -205,15 +205,32 @@ def add_product(data: ProductIn, user=Depends(require("admin"))):
 def products(q: str = "", active: bool | None = None, page: int = 1,
              limit: int = 30, user=Depends(current_user)):
     page, limit = max(1, page), max(1, min(100, limit))
+    search = q.strip()
     with pool.connection() as c:
+        # Exact SKU/barcode scans are common in warehouse workflows. Resolve
+        # those through the existing unique B-tree indexes before substring search.
+        # Keep the trigram path below for partial SKU, name and barcode queries.
+        if search and page == 1:
+            exact = all_rows(c, """
+              SELECT p.id,p.sku,p.name,p.unit,p.barcode,p.category,p.pick_policy,p.active,
+                     count(*) OVER()::int AS total
+              FROM products p
+              WHERE (p.sku=%s OR p.sku=%s OR p.barcode=%s)
+                AND (%s::boolean IS NULL OR p.active=%s::boolean)
+              ORDER BY p.sku LIMIT %s
+            """, (search, search.upper(), search, active, active, limit))
+            if exact:
+                return {"items": clean(exact), "total": exact[0]["total"],
+                        "page": page, "limit": limit}
         rows = all_rows(c, """
           SELECT p.id,p.sku,p.name,p.unit,p.barcode,p.category,p.pick_policy,p.active,
                  count(*) OVER()::int AS total
           FROM products p
           WHERE (%s='' OR p.sku ILIKE %s OR p.name ILIKE %s OR p.barcode ILIKE %s)
-            AND (%s::boolean IS NULL OR active=%s::boolean)
+            AND (%s::boolean IS NULL OR p.active=%s::boolean)
           ORDER BY p.sku LIMIT %s OFFSET %s
-        """, (q, f"%{q}%", f"%{q}%", f"%{q}%", active, active, limit, (page - 1) * limit))
+        """, (search, f"%{search}%", f"%{search}%", f"%{search}%",
+              active, active, limit, (page - 1) * limit))
         return {"items": clean(rows), "total": rows[0]["total"] if rows else 0,
                 "page": page, "limit": limit}
 
