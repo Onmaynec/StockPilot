@@ -281,10 +281,17 @@ def create_order(data: OrderInput, user=Depends(require("admin", "manager"))):
 def orders(status: str | None = None, user=Depends(require("admin", "manager", "supervisor", "picker"))):
     with pool.connection() as c:
         return clean(all_rows(c, """
-          SELECT DISTINCT o.id,o.customer,o.status,o.version,o.created_at,o.updated_at
-          FROM orders o JOIN order_lines l ON l.order_id=o.id
+          SELECT o.id,o.customer,o.status,o.version,o.created_at,o.updated_at
+          FROM orders o
           WHERE (%s::text IS NULL OR o.status=%s)
-            AND (%s OR l.warehouse_id=ANY(%s::uuid[]))
+            AND (%s OR (
+              EXISTS(SELECT 1 FROM order_lines l WHERE l.order_id=o.id)
+              AND NOT EXISTS(
+                SELECT 1 FROM order_lines restricted
+                WHERE restricted.order_id=o.id
+                  AND NOT (restricted.warehouse_id=ANY(%s::uuid[]))
+              )
+            ))
           ORDER BY o.created_at DESC LIMIT 100
         """, (status, status, user["role"] == "admin", user["warehouses"])))
 

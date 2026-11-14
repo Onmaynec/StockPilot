@@ -31,6 +31,7 @@ jobs:
       - run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f backend/migrations/001_init.sql
       - run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f backend/migrations/002_sessions.sql
       - run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f backend/migrations/003_inventory.sql
+      - run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f backend/migrations/004_rate_limits.sql
       - run: DEMO_PASSWORD=ci_demo_password_123 PYTHONPATH=backend python -m app.seed
       - run: PYTHONPATH=backend pytest -q backend/tests
   frontend:
@@ -50,6 +51,7 @@ jobs:
       - run: docker compose config -q
       - run: docker compose build
       - run: docker compose up -d --wait --wait-timeout 120
+      - run: docker compose exec -T api python -m app.security_check
       - run: curl --fail --silent http://localhost:8080/ > /dev/null
       - run: curl --fail --silent http://localhost:8080/health/ready
       - name: Seed representative inventory

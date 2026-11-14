@@ -25,9 +25,13 @@ services:
       PGDATABASE: ${POSTGRES_DB:?set POSTGRES_DB in .env}
       PGUSER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
       PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      APP_DB_USER: ${APP_DB_USER:?set APP_DB_USER in .env}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD in .env}
     volumes:
       - ./backend/migrations:/migrations:ro
-    command: ["/bin/sh", "-ec", "psql -v ON_ERROR_STOP=1 -f /migrations/002_sessions.sql && psql -v ON_ERROR_STOP=1 -f /migrations/003_inventory.sql"]
+      - ./scripts/db_roles.sql:/setup/db_roles.sql:ro
+      - ./scripts/migrate.sh:/setup/migrate.sh:ro
+    command: ["/bin/sh", "/setup/migrate.sh"]
     networks: [private]
   api:
     build: ./backend
@@ -37,6 +41,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
       DEMO_PASSWORD: ${DEMO_PASSWORD:-}
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-}
     depends_on:
       db:
         condition: service_healthy

@@ -3,8 +3,6 @@ import json
 import logging
 import os
 import time
-from collections import defaultdict, deque
-from threading import Lock
 from contextlib import asynccontextmanager
 from uuid import uuid4
 
@@ -15,28 +13,13 @@ from fastapi.responses import JSONResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
 from .db import pool, request_id
+from .security import client_key, rate_exceeded
 from . import catalog, operations, inventory, account
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("stockpilot")
 REQUESTS = Counter("stockpilot_http_requests_total", "HTTP requests", ["method", "path", "status"])
 LATENCY = Histogram("stockpilot_http_duration_seconds", "Request duration", ["method", "path"])
-# Single-process throttle; production multi-replica setups need a shared store.
-_rate_lock = Lock()
-_rate_buckets = defaultdict(deque)
-
-
-def rate_exceeded(key, limit, window_seconds):
-    now = time.monotonic()
-    with _rate_lock:
-        bucket = _rate_buckets[key]
-        while bucket and bucket[0] < now - window_seconds:
-            bucket.popleft()
-        if len(bucket) >= limit:
-            return True
-        bucket.append(now)
-        return False
-
 
 
 @asynccontextmanager
@@ -47,7 +30,7 @@ async def lifespan(app):
 
 
 app = FastAPI(
-    title="StockPilot WMS", version="0.3.0",
+    title="StockPilot WMS", version="0.4.0",
     description="Transactional multi-warehouse inventory API. Errors include requestId.",
     lifespan=lifespan,
 )
@@ -73,20 +56,21 @@ async def logging_middleware(request: Request, call_next):
     token = request_id.set(rid)
     begin = time.perf_counter()
     try:
-        forwarded = request.headers.get("x-forwarded-for", "")
-        source = (forwarded.rsplit(",", 1)[-1].strip() if forwarded
-                  else (request.client.host if request.client else "unknown"))
         route_path = request.url.path
-        limited = (
-            (route_path == "/api/v1/auth/login"
-             and rate_exceeded("login:" + source, 50, 60))
-            or (route_path.startswith("/api/")
-                and rate_exceeded("api:" + source, 2000, 60))
-        )
+        source = client_key(request)
+        limited = False
+        if route_path.startswith("/api/"):
+            # Atomic database counters work across API processes and replicas.
+            from starlette.concurrency import run_in_threadpool
+            if route_path == "/api/v1/auth/login":
+                limited = await run_in_threadpool(rate_exceeded, "login:" + source, 30, 60)
+            if not limited:
+                limited = await run_in_threadpool(rate_exceeded, "api:" + source, 2000, 60)
         if limited:
             response = JSONResponse(
                 {"code": "RATE_LIMIT", "message": "Превышен лимит запросов",
-                 "requestId": rid, "details": None}, status_code=429
+                 "requestId": rid, "details": None}, status_code=429,
+                headers={"Retry-After": "60"}
             )
         else:
             response = await call_next(request)
@@ -108,6 +92,8 @@ async def logging_middleware(request: Request, call_next):
                                  "status": status, "durationMs": round(elapsed * 1000, 2)}))
         request_id.reset(token)
     response.headers["X-Request-Id"] = rid
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
     return response

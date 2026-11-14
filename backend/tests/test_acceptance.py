@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from app.auth import hash_password
 from app.db import one, pool
 from app.jobs import expire_once
-from app.main import app, _rate_buckets, _rate_lock
+from app.main import app
 
 
 @pytest.fixture(scope="session")
@@ -26,7 +26,8 @@ def env(client):
             return_lines, shipments, pick_tasks, reservations, order_lines, orders,
             inventory_lines, inventory_counts, transfers, receipt_lines, receipts,
             stock_blocks, stock_movements, stock_guards, lots, products, bins,
-            zones, user_warehouses, warehouses, suppliers, customers, users
+            zones, user_warehouses, warehouses, suppliers, customers, users,
+            rate_limit_counters
           RESTART IDENTITY CASCADE
         """)
         wh = str(uuid4())
@@ -53,9 +54,6 @@ def env(client):
                   role, role))
             c.execute("INSERT INTO user_warehouses(user_id,warehouse_id) VALUES(%s,%s)",
                       (user_id, wh))
-    # Each case starts with a fresh client-rate window; throttling is tested separately.
-    with _rate_lock:
-        _rate_buckets.clear()
     tokens = {}
     for role in ("admin", "manager", "picker", "supervisor", "director"):
         r = client.post("/api/v1/auth/login", json={
@@ -515,3 +513,79 @@ def test_stock_reconciliation_reports_negative_and_respects_roles(env):
     other = str(uuid4())
     assert client.get("/api/v1/stocks/anomalies?warehouseId=" + other,
                       headers=users["supervisor"]).status_code == 403
+
+
+
+def test_shared_rate_limiter_is_atomic_across_threads(env):
+    # A single database row serializes separate workers/processes.
+    from app.security import rate_exceeded
+    key = "test-atomic-" + str(uuid4())
+    with ThreadPoolExecutor(max_workers=12) as executor:
+        decisions = list(executor.map(lambda _: rate_exceeded(key, 5, 60), range(16)))
+    assert decisions.count(False) == 5
+    assert decisions.count(True) == 11
+
+
+def test_rate_limiter_returns_429_and_no_ip_leak(env):
+    from app.security import rate_exceeded
+    from app.security import client_key
+    from starlette.requests import Request
+    client, users, ids = env
+    peer = Request({"type": "http", "headers": [(b"x-real-ip", b"192.0.2.77")],
+                    "client": ("198.51.100.7", 44)})
+    assert client_key(peer) == "198.51.100.7"
+    from unittest.mock import patch
+    with patch.dict("os.environ", {"TRUSTED_PROXY_CIDRS": "198.51.100.0/24"}):
+        assert client_key(peer) == "192.0.2.77"
+    # Reset the five login attempts required by this test's fixture.
+    with pool.connection() as c:
+        c.execute("DELETE FROM rate_limit_counters")
+    # The test client key is 'testclient', identical to the middleware.
+    for _ in range(30):
+        assert not rate_exceeded("login:testclient", 30, 60)
+    response = client.post("/api/v1/auth/login", json={
+        "email": "manager@test.local", "password": "incorrect"
+    })
+    assert response.status_code == 429, response.text
+    assert response.headers.get("retry-after") == "60"
+    assert "password" not in response.text.lower()
+    with pool.connection() as c:
+        record = one(c, "SELECT key_hash FROM rate_limit_counters WHERE hits>=31 LIMIT 1")
+        assert record is not None and "testclient" not in record["key_hash"]
+
+
+def test_expired_rate_limit_window_is_cleaned(env):
+    from app.security import cleanup_rate_limits
+    with pool.connection() as c:
+        c.execute("""
+          INSERT INTO rate_limit_counters(key_hash,window_id,hits)
+          VALUES('historical-window',0,5)
+        """)
+    assert cleanup_rate_limits() >= 1
+    with pool.connection() as c:
+        assert one(c, "SELECT 1 FROM rate_limit_counters WHERE key_hash='historical-window'") is None
+
+
+
+def test_mixed_warehouse_order_is_hidden_from_partial_scope(env):
+    client, users, ids = env
+    other_wh = str(uuid4())
+    with pool.connection() as c:
+        c.execute("""
+          INSERT INTO warehouses(id,code,name) VALUES(%s,'SECOND','Независимый склад')
+        """, (other_wh,))
+    created = client.post("/api/v1/orders", headers=users["admin"], json={
+        "customer": "Чужой склад / закрытая часть",
+        "items": [
+            {"productId": ids["product"], "warehouseId": ids["warehouse"], "qty": 1},
+            {"productId": ids["product"], "warehouseId": other_wh, "qty": 1}
+        ]
+    })
+    assert created.status_code == 201, created.text
+    oid = created.json()["id"]
+    manager = client.get("/api/v1/orders", headers=users["manager"])
+    assert manager.status_code == 200, manager.text
+    assert oid not in {row["id"] for row in manager.json()}
+    assert client.get("/api/v1/orders/" + oid, headers=users["manager"]).status_code == 403
+    admin = client.get("/api/v1/orders", headers=users["admin"])
+    assert oid in {row["id"] for row in admin.json()}

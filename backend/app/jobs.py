@@ -5,6 +5,7 @@ import os
 import time
 
 from .db import all_rows, audit, lock_stock, one, outbox, pool
+from .security import cleanup_rate_limits
 
 log = logging.getLogger(__name__)
 
@@ -96,8 +97,10 @@ def run():
             try:
                 expired = expire_once()
                 dispatched = dispatch_outbox_once()
-                if expired or dispatched:
-                    log.info("expired=%s simulated_dispatch=%s", expired, dispatched)
+                cleaned = cleanup_rate_limits()
+                if expired or dispatched or cleaned:
+                    log.info("expired=%s simulated_dispatch=%s rate_windows_cleaned=%s",
+                             expired, dispatched, cleaned)
             except Exception:
                 log.exception("Worker iteration failed; retrying")
             time.sleep(15)
