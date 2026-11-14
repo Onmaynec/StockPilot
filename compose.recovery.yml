@@ -37,7 +37,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
-      TRUSTED_PROXY_CIDRS: 172.31.0.2/32
+      TRUSTED_PROXY_CIDRS: 172.28.250.2/32
       STOCKPILOT_ENV: ${STOCKPILOT_ENV:-development}
       APP_DB_USER: ${APP_DB_USER:?set APP_DB_USER in .env}
       POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
@@ -61,7 +61,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
       DEMO_PASSWORD: ${DEMO_PASSWORD:-}
-      TRUSTED_PROXY_CIDRS: 172.31.0.2/32
+      TRUSTED_PROXY_CIDRS: 172.28.250.2/32
     depends_on:
       migrate: {condition: service_completed_successfully}
     networks: [recovery]
@@ -76,7 +76,7 @@ services:
       retries: 12
     networks:
       recovery:
-        ipv4_address: 172.31.0.2
+        ipv4_address: 172.28.250.2
 volumes:
   recovery_pgdata:
 networks:
@@ -84,4 +84,4 @@ networks:
     internal: true
     ipam:
       config:
-        - subnet: 172.31.0.0/24
+        - subnet: 172.28.250.0/24

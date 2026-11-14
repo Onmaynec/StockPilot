@@ -11,7 +11,7 @@ def production_env(monkeypatch):
         "JWT_SECRET": secrets.token_urlsafe(48),
         "CORS_ORIGINS": "https://wms.example.com",
         "DEMO_PASSWORD": "",
-        "TRUSTED_PROXY_CIDRS": "172.30.0.2/32",
+        "TRUSTED_PROXY_CIDRS": "172.29.250.2/32",
         "APP_DB_USER": "stockpilot_app",
         "POSTGRES_USER": "stockpilot",
         "DATABASE_URL": "postgresql://stockpilot_app:db-secret@db:5432/stockpilot",

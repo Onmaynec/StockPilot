@@ -134,7 +134,10 @@ def main():
                 if identities:
                     ids = [row["id"] for row in identities]
                     c.execute("DELETE FROM user_warehouses WHERE user_id=ANY(%s::uuid[])", (ids,))
-                    c.execute("DELETE FROM users WHERE id=ANY(%s::uuid[])", (ids,))
+                    c.execute("""
+                      UPDATE users SET active=false,token_version=token_version+1
+                      WHERE id=ANY(%s::uuid[])
+                    """, (ids,))
         finally:
             pool.close()
 

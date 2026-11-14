@@ -459,6 +459,7 @@ def run():
             if identities:
                 with pool.connection() as c, c.transaction():
                     ids = [item["id"] for item in identities]
+                    c.execute("DELETE FROM user_warehouses WHERE user_id=ANY(%s::uuid[])", (ids,))
                     c.execute("""
                       UPDATE users SET active=false,token_version=token_version+1
                       WHERE id=ANY(%s::uuid[])
