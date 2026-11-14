@@ -66,13 +66,21 @@ jobs:
         run: |
           docker compose exec -T -e STOCKPILOT_PERF_ALLOW=1 api python -m app.load_profile > load-report.json
           cat load-report.json
+      - name: Mixed API write rehearsal (20 competing orders, 40 ledger movements)
+        run: |
+          docker compose exec -T \
+            -e STOCKPILOT_WRITE_PROFILE_ALLOW=1 \
+            -e STOCKPILOT_WRITE_PROFILE_ISOLATED=1 \
+            -e STOCKPILOT_WRITE_TRANSFERS=20 api python -m app.write_profile > write-report.json
+          cat write-report.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: stockpilot-03-operational-evidence
+          name: stockpilot-06-operational-evidence
           path: |
             restore-report.json
             load-report.json
+            write-report.json
           if-no-files-found: ignore
       - if: failure()
         run: docker compose logs --tail=120 api db migrate worker web

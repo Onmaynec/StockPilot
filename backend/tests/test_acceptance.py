@@ -704,3 +704,70 @@ def test_catalog_substring_search_and_pg_trgm_indexes(env):
         """).fetchall()}
     assert {"idx_products_sku_search","idx_products_name_search",
             "idx_products_barcode_search"}.issubset(indexed)
+
+
+
+def test_stock_summary_counts_active_reservations_and_blocks(env):
+    client, users, ids = env
+    receipt(env, 12)
+    oid = create_order(env, 3)
+    assert reserve(env, oid).status_code == 200
+    blocked = client.post("/api/v1/blocks", headers=users["supervisor"], json={
+        "productId": ids["product"], "binId": ids["bin"], "lotId": ids["lot"],
+        "qty": 2, "reason": "Проверка качества"
+    })
+    assert blocked.status_code == 201, blocked.text
+    detail = client.get("/api/v1/stocks?sku=SKU-001", headers=users["picker"])
+    assert detail.status_code == 200, detail.text
+    row = detail.json()["items"][0]
+    assert (row["physical"], row["reserved"], row["blocked"], row["available"]) == (12,3,2,7)
+    assert detail.json()["total"] == 1
+    result = client.get("/api/v1/stocks?sku=DOES-NOT-EXIST", headers=users["picker"])
+    assert result.status_code == 200 and result.json() == {
+        "items": [], "total": 0, "page": 1, "limit": 50
+    }
+    released = client.post("/api/v1/blocks/" + blocked.json()["id"] + "/release",
+                           headers=users["supervisor"])
+    assert released.status_code == 200, released.text
+    assert stock(env)["available"] == 9
+
+
+def test_stock_page_respects_warehouse_access_and_pagination(env):
+    client, users, ids = env
+    receipt(env, 5)
+    with pool.connection() as c, c.transaction():
+        other_warehouse = str(uuid4())
+        other_zone = str(uuid4())
+        other_bin = str(uuid4())
+        c.execute("INSERT INTO warehouses(id,code,name) VALUES (%s,'W2','Второй склад')",
+                  (other_warehouse,))
+        c.execute("INSERT INTO zones(id,warehouse_id,code,name) VALUES (%s,%s,'A','Зона 2')",
+                  (other_zone,other_warehouse))
+        c.execute("""
+          INSERT INTO bins(id,warehouse_id,zone_id,code) VALUES (%s,%s,%s,'A-01')
+        """,(other_bin,other_warehouse,other_zone))
+        c.execute("""
+          INSERT INTO stock_guards(product_id,warehouse_id) VALUES (%s,%s)
+        """,(ids["product"],other_warehouse))
+        c.execute("""
+          INSERT INTO stock_movements(product_id,warehouse_id,bin_id,lot_id,
+                                      qty,doc_type,doc_id)
+          VALUES(%s,%s,%s,%s,4,'test',%s)
+        """,(ids["product"],other_warehouse,other_bin,ids["lot"],str(uuid4())))
+    restricted = client.get("/api/v1/stocks?sku=SKU-001",headers=users["manager"])
+    assert restricted.status_code == 200
+    assert restricted.json()["total"] == 1
+    assert restricted.json()["items"][0]["warehouse_id"] == ids["warehouse"]
+    forbidden = client.get("/api/v1/stocks?warehouseId=" + other_warehouse,
+                           headers=users["manager"])
+    assert forbidden.status_code == 403
+    admin_page1 = client.get("/api/v1/stocks?sku=SKU-001&page=1&limit=1",
+                             headers=users["admin"])
+    admin_page2 = client.get("/api/v1/stocks?sku=SKU-001&page=2&limit=1",
+                             headers=users["admin"])
+    assert admin_page1.status_code == 200 and admin_page2.status_code == 200
+    assert admin_page1.json()["total"] == 2 == admin_page2.json()["total"]
+    assert {x["warehouse_id"] for x in
+            [admin_page1.json()["items"][0],admin_page2.json()["items"][0]]} == {
+                ids["warehouse"], other_warehouse
+            }
