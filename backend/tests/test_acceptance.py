@@ -1,4 +1,6 @@
 """PostgreSQL integration checks for StockPilot acceptance invariants."""
+import csv
+import io
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -929,3 +931,115 @@ def test_catalog_exact_sku_lookup_prefers_unique_index_without_losing_substring_
     inactive = client.get("/api/v1/products?q=SKU-001&active=true",
                           headers=users["manager"])
     assert inactive.status_code == 200 and inactive.json()["total"] == 1
+
+
+
+def test_director_has_global_read_scope_but_cannot_post_operations(env):
+    client, users, ids = env
+    warehouse = client.post("/api/v1/warehouses", headers=users["admin"], json={
+        "code": "W2", "name": "Второй склад"
+    })
+    assert warehouse.status_code == 201, warehouse.text
+    warehouse_id = warehouse.json()["id"]
+    zone = client.post("/api/v1/zones", headers=users["admin"], json={
+        "warehouseId": warehouse_id, "code": "B", "name": "Вторая зона"
+    })
+    assert zone.status_code == 201, zone.text
+    zone_id = zone.json()["id"]
+    bin_row = client.post("/api/v1/bins", headers=users["admin"], json={
+        "zoneId": zone_id, "code": "B-01"
+    })
+    assert bin_row.status_code == 201, bin_row.text
+    bin_id = bin_row.json()["id"]
+    product = client.post("/api/v1/products", headers=users["admin"], json={
+        "sku": "SKU-002", "name": "Товар второго склада"
+    })
+    assert product.status_code == 201, product.text
+    product_id = product.json()["id"]
+    lot = client.post("/api/v1/lots", headers=users["admin"], json={
+        "productId": product_id, "code": "W2-LOT"
+    })
+    assert lot.status_code == 201, lot.text
+    with pool.connection() as c:
+        c.execute("""
+          INSERT INTO stock_guards(product_id,warehouse_id) VALUES(%s,%s)
+        """, (product_id, warehouse_id))
+        c.execute("""
+          INSERT INTO stock_movements(product_id,warehouse_id,bin_id,lot_id,
+                                      qty,doc_type,doc_id)
+          VALUES(%s,%s,%s,%s,5,'test-scope',%s)
+        """, (product_id, warehouse_id, bin_id, lot.json()["id"], str(uuid4())))
+
+    director = users["director"]
+    assert warehouse_id in {row["id"] for row in client.get(
+        "/api/v1/warehouses", headers=director).json()}
+    assert client.get("/api/v1/zones?warehouseId=" + warehouse_id,
+                      headers=director).status_code == 200
+    assert client.get("/api/v1/bins?warehouseId=" + warehouse_id,
+                      headers=director).status_code == 200
+    stock_rows = client.get("/api/v1/stocks?warehouseId=" + warehouse_id,
+                            headers=director)
+    assert stock_rows.status_code == 200, stock_rows.text
+    assert stock_rows.json()["items"][0]["physical"] == 5
+    movement_rows = client.get("/api/v1/movements?warehouseId=" + warehouse_id,
+                               headers=director)
+    assert movement_rows.status_code == 200 and movement_rows.json()["total"] == 1
+    assert client.get("/api/v1/export/stocks.csv?warehouseId=" + warehouse_id,
+                      headers=director).status_code == 200
+
+    for route in (
+        "/api/v1/zones?warehouseId=" + warehouse_id,
+        "/api/v1/bins?warehouseId=" + warehouse_id,
+        "/api/v1/stocks?warehouseId=" + warehouse_id,
+        "/api/v1/movements?warehouseId=" + warehouse_id,
+        "/api/v1/export/stocks.csv?warehouseId=" + warehouse_id,
+    ):
+        response = client.get(route, headers=users["manager"])
+        assert response.status_code == 403, (route, response.status_code, response.text)
+
+    count = client.post("/api/v1/inventory", headers=users["admin"],
+                        json={"zoneId": zone_id})
+    assert count.status_code == 201, count.text
+    count_id = count.json()["id"]
+    assert client.get("/api/v1/inventory/" + count_id + "/variance",
+                      headers=director).status_code == 200
+    forbidden_order = client.post("/api/v1/orders", headers=director, json={
+        "customer": "Director must be read-only",
+        "items": [{"productId": product_id, "warehouseId": warehouse_id, "qty": 1}],
+    })
+    assert forbidden_order.status_code == 403
+
+
+def test_csv_export_neutralizes_spreadsheet_formula_cells(env):
+    client, users, ids = env
+    created = client.post("/api/v1/products", headers=users["admin"], json={
+        "sku": "CSV-INJECT", "name": "=1+1", "barcode": "@SUM(1,1)",
+    })
+    assert created.status_code == 201, created.text
+    exported = client.get("/api/v1/export/products.csv", headers=users["admin"])
+    assert exported.status_code == 200, exported.text
+    assert "'=1+1" in exported.text
+    assert "'@SUM(1,1)" in exported.text
+
+
+def test_user_email_is_normalized_and_validated(env):
+    client, users, ids = env
+    created = client.post("/api/v1/users", headers=users["admin"], json={
+        "email": " New.User@Example.org ",
+        "fullName": "Новый сотрудник",
+        "role": "picker",
+        "password": "integration-password-123!",
+        "warehouseIds": [ids["warehouse"]],
+    })
+    assert created.status_code == 201, created.text
+    assert created.json()["email"] == "new.user@example.org"
+    login = client.post("/api/v1/auth/login", json={
+        "email": " NEW.USER@EXAMPLE.ORG ", "password": "integration-password-123!"
+    })
+    assert login.status_code == 200, login.text
+    invalid = client.post("/api/v1/users", headers=users["admin"], json={
+        "email": "not-an-email", "fullName": "Неверный адрес",
+        "role": "picker", "password": "integration-password-123!",
+    })
+    assert invalid.status_code == 400
+    assert invalid.json()["code"] == "INVALID_EMAIL"
