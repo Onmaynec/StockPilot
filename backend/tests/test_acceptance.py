@@ -379,7 +379,7 @@ def test_returnable_shipment_decrements_after_return(env):
                          headers={**users["picker"], "Idempotency-Key": "return-once-01"},
                          json={"reservationId": reservation_id,
                                "binId": ids["bin"], "qty": 2})
-    assert replay.status_code == 200, replay.text
+    assert replay.status_code == 201, replay.text
     assert replay.json() == returned.json()
     assert client.get(route, headers=users["manager"]).json()["items"][0]["returnable_qty"] == 1
     assert stock(env)["physical"] == 9
