@@ -1,0 +1,49 @@
+name: Publish StockPilot 0.1.0 and 0.2.0 releases
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-releases.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release notes
+        uses: actions/checkout@v4
+      - name: Publish v0.1.0 from its source commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view v0.1.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v0.1.0 already exists; leaving it unchanged"
+          else
+            gh release create v0.1.0 --repo "$GITHUB_REPOSITORY" \
+              --target 5abd53f8c61439447bb8699740f3f7cbad21403e \
+              --title "StockPilot v0.1.0 — первый MVP" \
+              --notes-file docs/RELEASE_0.1.0.md
+          fi
+      - name: Publish v0.2.0 from the verified merge commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view v0.2.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v0.2.0 already exists; leaving it unchanged"
+          else
+            gh release create v0.2.0 --repo "$GITHUB_REPOSITORY" \
+              --target 1cc94c2fb0d7303f15f38998e012a4c0b302e2fa \
+              --title "StockPilot v0.2.0 — Operations Update" \
+              --notes-file docs/RELEASE_0.2.0.md \
+              --latest
+          fi
+      - name: Verify both public releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view v0.1.0 --repo "$GITHUB_REPOSITORY" --json tagName,url,isDraft,isPrerelease
+          gh release view v0.2.0 --repo "$GITHUB_REPOSITORY" --json tagName,url,isDraft,isPrerelease
