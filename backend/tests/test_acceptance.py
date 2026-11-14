@@ -564,3 +564,28 @@ def test_expired_rate_limit_window_is_cleaned(env):
     assert cleanup_rate_limits() >= 1
     with pool.connection() as c:
         assert one(c, "SELECT 1 FROM rate_limit_counters WHERE key_hash='historical-window'") is None
+
+
+
+def test_mixed_warehouse_order_is_hidden_from_partial_scope(env):
+    client, users, ids = env
+    other_wh = str(uuid4())
+    with pool.connection() as c:
+        c.execute("""
+          INSERT INTO warehouses(id,code,name) VALUES(%s,'SECOND','Независимый склад')
+        """, (other_wh,))
+    created = client.post("/api/v1/orders", headers=users["admin"], json={
+        "customer": "Чужой склад / закрытая часть",
+        "items": [
+            {"productId": ids["product"], "warehouseId": ids["warehouse"], "qty": 1},
+            {"productId": ids["product"], "warehouseId": other_wh, "qty": 1}
+        ]
+    })
+    assert created.status_code == 201, created.text
+    oid = created.json()["id"]
+    manager = client.get("/api/v1/orders", headers=users["manager"])
+    assert manager.status_code == 200, manager.text
+    assert oid not in {row["id"] for row in manager.json()}
+    assert client.get("/api/v1/orders/" + oid, headers=users["manager"]).status_code == 403
+    admin = client.get("/api/v1/orders", headers=users["admin"])
+    assert oid in {row["id"] for row in admin.json()}
