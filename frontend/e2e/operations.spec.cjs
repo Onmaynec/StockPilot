@@ -97,3 +97,73 @@ test('account: changing password invalidates active JWTs', async ({ page }) => {
   });
   expect(denied.status()).toBe(401);
 });
+
+
+test('admin provisions warehouse, locations, employee access and a product lot', async ({ page }) => {
+  const suffix = String(Date.now()) + Math.random().toString(36).slice(2, 6);
+  const whCode = 'E5' + suffix;
+  const zoneCode = 'Z5' + suffix;
+  const binCode = 'BIN5' + suffix;
+  const newEmail = 'e5-' + suffix + '@example.org';
+  await authenticate(page, 'admin@stockpilot.local');
+  await section(page, 'Администрирование');
+  await expect(page.getByTestId('admin-console')).toBeVisible();
+
+  await page.getByRole('tab', { name: 'Склады и ячейки' }).click();
+  const warehouse = page.getByTestId('create-warehouse-form');
+  await warehouse.getByRole('textbox', { name: 'Новый код склада' }).fill(whCode);
+  await warehouse.getByRole('textbox', { name: 'Название' }).fill('Тестовый склад E2E');
+  const savedWarehouse = page.waitForResponse(r =>
+    r.url().endsWith('/api/v1/warehouses') && r.request().method() === 'POST');
+  await warehouse.getByRole('button', { name: 'Создать склад' }).click();
+  expect((await savedWarehouse).status()).toBe(201);
+  await expect(page.getByRole('button', { name: new RegExp(whCode) })).toBeVisible();
+
+  const zone = page.getByTestId('create-zone-form');
+  await zone.getByRole('textbox', { name: 'Код новой зоны' }).fill(zoneCode);
+  await zone.getByRole('textbox', { name: 'Название зоны' }).fill('Тестовая зона');
+  const savedZone = page.waitForResponse(r =>
+    r.url().endsWith('/api/v1/zones') && r.request().method() === 'POST');
+  await zone.getByRole('button', { name: 'Добавить зону' }).click();
+  expect((await savedZone).status()).toBe(201);
+  const bin = page.getByTestId('create-bin-form');
+  await bin.getByRole('combobox', { name: 'Зона' }).selectOption({ label: zoneCode + ' / Тестовая зона' });
+  await bin.getByRole('textbox', { name: 'Код ячейки' }).fill(binCode);
+  const savedBin = page.waitForResponse(r =>
+    r.url().endsWith('/api/v1/bins') && r.request().method() === 'POST');
+  await bin.getByRole('button', { name: 'Добавить ячейку' }).click();
+  expect((await savedBin).status()).toBe(201);
+  await expect(page.getByText(binCode)).toBeVisible();
+
+  await page.getByRole('tab', { name: 'Сотрудники' }).click();
+  const employees = page.getByTestId('create-user-form');
+  await employees.getByRole('textbox', { name: 'Полное имя' }).fill('Тестовый сотрудник E2E');
+  await employees.getByRole('textbox', { name: 'Электронная почта' }).fill(newEmail);
+  await employees.locator('input[type="password"]').fill('integration-password-123!');
+  await employees.getByRole('checkbox', { name: new RegExp(whCode) }).check();
+  const savedUser = page.waitForResponse(r =>
+    r.url().endsWith('/api/v1/users') && r.request().method() === 'POST');
+  await employees.getByRole('button', { name: 'Создать сотрудника' }).click();
+  expect((await savedUser).status()).toBe(201);
+  const employeeRow = page.getByTestId('employee-row').filter({ hasText: newEmail });
+  await expect(employeeRow).toContainText('Активен');
+  const blocked = page.waitForResponse(r =>
+    /\/api\/v1\/users\/[^/]+\/status$/.test(r.url()) &&
+    r.request().method() === 'POST');
+  page.once('dialog', dialog => dialog.accept());
+  await employeeRow.getByRole('button', { name: 'Заблокировать' }).click();
+  expect((await blocked).status()).toBe(200);
+  await expect(employeeRow).toContainText('Заблокирован');
+
+  await page.getByRole('tab', { name: 'Партии товаров' }).click();
+  await page.getByRole('textbox', { name: 'Поиск по SKU или названию' }).fill('SKU-00001');
+  await expect(page.getByRole('combobox', { name: 'Номенклатура' })
+    .locator('option', { hasText: 'SKU-00001' })).toBeAttached();
+  const lot = page.getByTestId('create-lot-form');
+  await lot.getByRole('textbox', { name: 'Код партии' }).fill('LOT-E5-' + suffix);
+  const savedLot = page.waitForResponse(r =>
+    r.url().endsWith('/api/v1/lots') && r.request().method() === 'POST');
+  await lot.getByRole('button', { name: 'Сохранить партию' }).click();
+  expect((await savedLot).status()).toBe(201);
+  await expect(page.getByText('LOT-E5-' + suffix)).toBeVisible();
+});
