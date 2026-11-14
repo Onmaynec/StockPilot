@@ -1,6 +1,6 @@
-# Публикация GitHub Releases — StockPilot v0.1.0–v0.7.0
+# Публикация GitHub Releases — StockPilot v0.1.0–v0.8.0
 
-Релизы v0.1.0–v0.4.0 опубликованы владельцем репозитория. Исходный код v0.5.0, v0.6.0 и v0.7.0 уже слит в `main`; их GitHub Releases публикуются отдельно. Публикация кода не создаёт Release автоматически.
+Релизы v0.1.0–v0.4.0 опубликованы владельцем репозитория. Исходный код v0.5.0, v0.6.0, v0.7.0 и v0.8.0 уже слит в `main`; их GitHub Releases публикуются отдельно. Публикация кода не создаёт Release автоматически.
 
 ## Почему публикация не завершилась автоматически
 
@@ -71,7 +71,15 @@
 4. Описание: [docs/RELEASE_0.7.0.md](RELEASE_0.7.0.md), включая результаты CI и предупреждение о незакрытом production AT-11.
 5. Опубликуйте обычный Release, отметьте **Latest**. Это архив исходного кода и Docker-проект, а не Windows EXE.
 
-В разделе https://github.com/Onmaynec/StockPilot/releases должны появиться **семь карточек**, а GitHub автоматически предоставит архивы `Source code (zip)` и `Source code (tar.gz)`. Готовых бинарных установщиков в этих версиях нет.
+### StockPilot v0.8.0
+
+1. Откройте https://github.com/Onmaynec/StockPilot/releases/new .
+2. Создайте тег `v0.8.0`, Target — **`fd94880`** (полный SHA `fd9488073eee9a8f11afc90f1fc4b3f87cb42c8f`, итоговый коммит PR #12).
+3. Название: `StockPilot v0.8.0 — Mobile Picking & Assignment`.
+4. Текст описания возьмите из [docs/RELEASE_0.8.0.md](RELEASE_0.8.0.md); не объявляйте AT-12 завершённым без приёмки на физическом смартфоне.
+5. Опубликуйте обычный Release (не Draft и не Prerelease), отметьте Latest. Это архивы Docker/исходного кода, не EXE.
+
+В разделе https://github.com/Onmaynec/StockPilot/releases должны появиться **восемь карточек**, а GitHub автоматически предоставит архивы `Source code (zip)` и `Source code (tar.gz)`. Готовых бинарных установщиков в этих версиях нет.
 
 ## Вариант 2 — автоматизация одним запуском
 
@@ -79,7 +87,7 @@
 
 1. В GitHub Settings → Secrets and variables → Actions создайте repository secret `STOCKPILOT_RELEASE_TOKEN` с **fine-grained personal access token** для этого репозитория, выданным владельцем, с **Contents: Read and write** и **Workflows: Read and write**. Токен должен иметь минимально необходимый срок действия.
 2. В Actions выберите **Publish StockPilot releases** → **Run workflow** на `main`.
-3. Проверьте семь записей в Releases и теги `v0.1.0`/`v0.2.0`/`v0.3.0`/`v0.4.0`/`v0.5.0`/`v0.6.0`/`v0.7.0`.
+3. Проверьте восемь записей в Releases и теги `v0.1.0`/`v0.2.0`/`v0.3.0`/`v0.4.0`/`v0.5.0`/`v0.6.0`/`v0.7.0`/`v0.8.0`.
 
 **Не вставляйте токен в чат, README, Issues или GitHub Actions YAML.** Если workflow завершится ошибкой, сохраняйте лог без секретов и проверяйте права токена. После публикации удалите или отзовите временный токен.
 
