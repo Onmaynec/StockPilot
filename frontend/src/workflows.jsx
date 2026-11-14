@@ -36,6 +36,7 @@ export function OrderComposer({ api, warehouses, onCreate, busy }) {
   }, [query, api]);
 
   function addLine() {
+    if (lines.length >= 50) { setError('В заказе не более 50 позиций.'); return; }
     const product = products.find(row => row.id === chosen);
     if (!product) return;
     setLines(prev => [...prev, {
@@ -82,7 +83,7 @@ export function OrderComposer({ api, warehouses, onCreate, busy }) {
             : <option value="">Нет совпадений</option>}
         </select></label>
       <button type="button" className="btn secondary" onClick={addLine}
-        disabled={!chosen || !warehouses.length}><Plus size={16} />Добавить позицию</button>
+        disabled={!chosen || !warehouses.length || lines.length >= 50}><Plus size={16} />Добавить позицию</button>
     </div>
     <div className="composer-heading"><strong>Позиции заказа</strong>
       <span>{lines.length} из 50</span></div>

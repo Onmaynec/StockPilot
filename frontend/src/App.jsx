@@ -88,20 +88,41 @@ function SectionHeader({ title, subtitle, children }) {
     <div className="header-actions">{children}</div></div>;
 }
 
-function PickCard({ task, onConfirm, onApprove, canConfirm, canApprove, busy }) {
-  const key = 'stockpilot_pick_' + task.id;
+function PickCard({
+  task, onConfirm, onApprove, onAssign, canConfirm, canApprove, canAssign,
+  assignees, currentUserId, busy
+}) {
+  // Drafts are short-lived and isolated by employee + task within this browser tab.
+  // They never contain credentials and do not survive a browser session.
+  const key = 'stockpilot_pick_' + currentUserId + '_' + task.id;
   const initial = () => {
-    try { return JSON.parse(localStorage.getItem(key) || '{}'); } catch { return {}; }
+    try { return JSON.parse(sessionStorage.getItem(key) || '{}'); } catch { return {}; }
   };
   const [barcode, setBarcode] = useState(() => initial().barcode || '');
   const [actual, setActual] = useState(() => initial().actual ?? task.expected_qty);
   const [camera, setCamera] = useState(false);
+  const [scanError, setScanError] = useState('');
   const video = useRef(null);
   const stream = useRef(null);
   const timer = useRef(null);
+  const active = task.status === 'pending';
+  const expected = Number(task.expected_qty);
+  const picked = Number(actual);
+  const validPick = actual !== '' && Number.isInteger(picked) && picked >= 0 && picked <= expected;
+  const shortPick = validPick && picked < expected;
+  const eligible = assignees.filter(person => (person.warehouse_ids || []).includes(task.warehouse_id));
+  const assignedName = task.assigned_to
+    ? task.assigned_to === currentUserId ? 'Вам'
+      : eligible.find(person => person.id === task.assigned_to)?.full_name || 'Другому сотруднику'
+    : 'Не назначено';
+
   useEffect(() => {
-    localStorage.setItem(key, JSON.stringify({ barcode, actual }));
-  }, [barcode, actual]);
+    if (active) {
+      sessionStorage.setItem(key, JSON.stringify({ barcode, actual }));
+    } else {
+      sessionStorage.removeItem(key);
+    }
+  }, [key, active, barcode, actual]);
   const stop = () => {
     clearInterval(timer.current);
     if (stream.current) stream.current.getTracks().forEach(track => track.stop());
@@ -114,9 +135,13 @@ function PickCard({ task, onConfirm, onApprove, canConfirm, canApprove, busy }) 
   }, []);
   async function scan() {
     if (camera) { stop(); return; }
+    setScanError('');
     try {
-      if (!('BarcodeDetector' in window)) throw new Error('Автосканирование недоступно в браузере');
-      const media = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      if (!('BarcodeDetector' in window)) throw new Error('Камера-сканер недоступна в этом браузере');
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error('Камера недоступна');
+      const media = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment' }
+      });
       stream.current = media;
       setCamera(true);
       const detector = new window.BarcodeDetector();
@@ -131,36 +156,70 @@ function PickCard({ task, onConfirm, onApprove, canConfirm, canApprove, busy }) 
         try {
           const codes = await detector.detect(video.current);
           if (codes[0]?.rawValue) { setBarcode(codes[0].rawValue); stop(); }
-        } catch { /* camera may be initializing */ }
+        } catch { /* camera may still be initializing */ }
       }, 500);
     } catch (err) {
-      alert(err.message + '. Введите штрихкод вручную.');
+      setScanError((err.message || 'Не удалось открыть камеру') +
+        '. Введите штрихкод или артикул вручную.');
       stop();
     }
   }
-  const active = task.status === 'pending';
-  return <article className="pick-card">
-    <div className="pick-top"><span className="eyebrow">{task.bin_code} / {short(task.warehouse_id)}</span>
-      <Pill status={task.status} /></div>
+
+  return <article className={'pick-card ' + (shortPick && active ? 'pick-card-short' : '')}
+    data-testid="pick-task">
+    <div className="pick-top">
+      <span className="eyebrow">{task.bin_code} / {short(task.warehouse_id)}</span>
+      <Pill status={task.status} />
+    </div>
     <div className="pick-title">{task.name}</div>
     <div className="pick-sku">{task.sku} <span>· {task.customer}</span></div>
+    <div className="pick-context">Заказ OR-{short(task.order_id)}
+      <span> · Исполнитель: {assignedName}</span></div>
     <div className="pick-qty"><strong>{task.expected_qty}</strong><span>ед. к отбору</span></div>
+    {active && canAssign && <label className="field">
+      <span>Назначить кладовщика</span>
+      <select aria-label={'Исполнитель ' + task.sku} value={task.assigned_to || ''}
+        disabled={busy || !eligible.length}
+        onChange={e => { if (e.target.value) onAssign(task.id, e.target.value); }}>
+        <option value="" disabled>{eligible.length ? 'Выберите сотрудника' : 'Нет доступных кладовщиков'}</option>
+        {eligible.map(person => <option key={person.id} value={person.id}>
+          {person.full_name}</option>)}
+      </select>
+    </label>}
     {active && canConfirm ? <>
       <label className="field"><span>Штрихкод / SKU</span><div className="input-with-icon">
-        <Barcode size={17} /><input placeholder="Сканируйте или введите" value={barcode}
-          onChange={e => setBarcode(e.target.value)} /></div></label>
-      <div className="inline-fields"><label className="field"><span>Фактически отобрано</span>
-        <input type="number" min="0" max={task.expected_qty} value={actual}
-          onChange={e => setActual(e.target.value)} /></label>
+        <Barcode size={17} /><input placeholder="Сканируйте или введите"
+          aria-label={'Штрихкод / SKU ' + task.sku}
+          value={barcode} onChange={e => setBarcode(e.target.value)}
+          autoComplete="off" autoCapitalize="off" spellCheck={false} /></div></label>
+      <div className="inline-fields"><label className="field">
+        <span>Фактически отобрано</span>
+        <input type="number" min="0" max={expected} step="1"
+          value={actual} onChange={e => setActual(e.target.value)}
+          aria-label="Фактически отобрано" inputMode="numeric" /></label>
         <Btn icon={ScanLine} onClick={scan}>{camera ? 'Закрыть' : 'Камера'}</Btn></div>
       {camera && <video ref={video} className="scanner-preview" autoPlay playsInline muted />}
-      <Btn variant="primary" icon={Check} disabled={busy || !barcode.trim() || actual === ''}
+      {scanError && <p className="pick-scan-error" role="alert">{scanError}</p>}
+      {shortPick && <div className="pick-shortage-warning" role="status">
+        Недобор: {expected - picked} шт. После подтверждения потребуется решение старшего смены.
+      </div>}
+      {!validPick && <p className="pick-scan-error" role="alert">
+        Укажите целое количество от 0 до {expected}.
+      </p>}
+      <Btn variant="primary" icon={Check} disabled={busy || !barcode.trim() || !validPick}
         onClick={async () => {
-          const ok = await onConfirm(task.id, barcode.trim(), Number(actual));
-          if (ok) localStorage.removeItem(key);
-        }}>Подтвердить отбор</Btn>
-    </> : <p className="helper">Факт: {task.actual_qty ?? '—'} из {task.expected_qty}.
-      {task.status === 'shortage_pending' ? ' Требуется решение старшего смены.' : ''}</p>}
+          if (shortPick && !window.confirm(
+            'Подтвердить недобор ' + (expected - picked) + ' шт.? ' +
+            'Задание будет ожидать старшего смены.'
+          )) return;
+          const ok = await onConfirm(task.id, barcode.trim(), picked);
+          if (ok) { sessionStorage.removeItem(key); stop(); }
+        }}>{shortPick ? 'Зафиксировать недобор' : 'Подтвердить отбор'}</Btn>
+    </> : <p className="helper">
+      {active && !canConfirm ? 'Задание назначено другому сотруднику или недоступно вашей роли. ' : ''}
+      Факт: {task.actual_qty ?? '—'} из {task.expected_qty}.
+      {task.status === 'shortage_pending' ? ' Требуется решение старшего смены.' : ''}
+    </p>}
     {task.status === 'shortage_pending' && canApprove &&
       <Btn variant="primary" icon={Check} disabled={busy}
         onClick={() => onApprove(task.id)}>Согласовать недобор</Btn>}
@@ -218,6 +277,7 @@ export default function App() {
   const [zoneOptions, setZoneOptions] = useState([]);
   const [detail, setDetail] = useState(null);
   const [pickFilter, setPickFilter] = useState('active');
+  const [pickAssignees, setPickAssignees] = useState([]);
   const [adminRefresh, setAdminRefresh] = useState(0);
 
   const current = NAV.find(item => item.id === screen) || NAV[0];
@@ -243,14 +303,41 @@ export default function App() {
   }
   function logout() {
     sessionStorage.removeItem('stockpilot_token');
+    for (let i = sessionStorage.length - 1; i >= 0; i--) {
+      const key = sessionStorage.key(i);
+      if (key?.startsWith('stockpilot_pick_')) sessionStorage.removeItem(key);
+    }
     setToken(null); setUser(null); setModal(null);
   }
+  useEffect(() => {
+    // Clean up unsafely persistent drafts created by older releases.
+    try {
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const key = localStorage.key(i);
+        if (key?.startsWith('stockpilot_pick_')) localStorage.removeItem(key);
+      }
+    } catch { /* storage may be restricted */ }
+  }, []);
   useEffect(() => {
     if (!token) return;
     Promise.all([api('GET', '/auth/me'), api('GET', '/warehouses')])
       .then(([me, wh]) => { setUser(me); setWarehouses(wh); })
       .catch(e => { alertMessage(e.message); logout(); });
   }, [token]);
+
+  useEffect(() => {
+    if (screen !== 'picks' || !user || !['admin', 'supervisor'].includes(user.role)) {
+      setPickAssignees([]);
+      return;
+    }
+    let cancelled = false;
+    const path = '/picks/assignees' + (warehouseId
+      ? '?warehouseId=' + encodeURIComponent(warehouseId) : '');
+    api('GET', path).then(result => {
+      if (!cancelled) setPickAssignees(result);
+    }).catch(err => { if (!cancelled) alertMessage(err.message); });
+    return () => { cancelled = true; };
+  }, [screen, user?.id, user?.role, warehouseId]);
 
   const query = new URLSearchParams();
   if (warehouseId) query.set('warehouseId', warehouseId);
@@ -272,7 +359,11 @@ export default function App() {
           anomalies: '/stocks/anomalies' + (warehouseId
             ? '?warehouseId=' + encodeURIComponent(warehouseId) : ''),
           products: '/products?q=' + encodeURIComponent(appliedSearch) + '&page=' + page,
-          receipts: '/receipts', orders: '/orders', picks: '/picks' + (warehouseId ? '?warehouseId=' + warehouseId : ''),
+          receipts: '/receipts', orders: '/orders', picks: '/picks' + (warehouseId || pickFilter === 'mine'
+            ? '?' + new URLSearchParams({
+                ...(warehouseId ? { warehouseId } : {}),
+                ...(pickFilter === 'mine' ? { assignedToMe: 'true' } : {})
+              }).toString() : ''),
           shipments: '/shipments', transfers: '/transfers',
           inventory: '/inventory', audit: '/audit?after=0&limit=100'
         };
@@ -285,7 +376,7 @@ export default function App() {
     } catch (e) { alertMessage(e.message); }
     finally { setLoading(false); }
   }
-  useEffect(() => { reload(); }, [screen, user?.id, warehouseId, appliedSearch, page]);
+  useEffect(() => { reload(); }, [screen, user?.id, warehouseId, appliedSearch, page, pickFilter]);
 
   async function action(method, path, body, idem = false, success = 'Операция выполнена') {
     setBusy(true);
@@ -439,7 +530,7 @@ export default function App() {
           <span>{item.label}</span>{screen === item.id && <span className="nav-indicator" />}</button>;
       })}</nav>
       <div className="sidebar-bottom"><div className="system-status"><span className="live-indicator" />
-        Серверная проверка операций</div><div className="version">STOCKPILOT WMS <span>v0.7.0</span></div></div>
+        Серверная проверка операций</div><div className="version">STOCKPILOT WMS <span>v0.8.0</span></div></div>
     </aside>
 
     <main className="main">
@@ -555,21 +646,35 @@ export default function App() {
                   <select id="pick-status-filter" value={pickFilter}
                     onChange={e => setPickFilter(e.target.value)}>
                     <option value="active">Ожидают / недобор</option>
+                    <option value="mine">Мои активные задания</option>
                     <option value="all">Все статусы</option>
                     <option value="completed">Завершённые</option>
                   </select>
+                  <span className="pick-filter-hint">
+                    {rows.filter(task => ['pending', 'shortage_pending'].includes(task.status)).length}
+                    {' '}активных задач · Черновики сохраняются только в этой вкладке браузера
+                  </span>
                 </div>
                 <div className="picks-grid">{
                   rows.filter(task => pickFilter === 'all'
+                    || (pickFilter === 'mine' && task.assigned_to === user?.id
+                      && ['pending', 'shortage_pending'].includes(task.status))
                     || (pickFilter === 'active' && ['pending', 'shortage_pending'].includes(task.status))
                     || (pickFilter === 'completed' && ['completed', 'accepted'].includes(task.status))
                   ).length
                   ? rows.filter(task => pickFilter === 'all'
+                    || (pickFilter === 'mine' && task.assigned_to === user?.id
+                      && ['pending', 'shortage_pending'].includes(task.status))
                     || (pickFilter === 'active' && ['pending', 'shortage_pending'].includes(task.status))
                     || (pickFilter === 'completed' && ['completed', 'accepted'].includes(task.status))
                   ).map(task =>
                     <PickCard key={task.id} task={task} busy={busy}
-                      canConfirm={canOperate} canApprove={canCount}
+                      currentUserId={user.id} assignees={pickAssignees}
+                      canConfirm={canOperate && (!task.assigned_to
+                        || task.assigned_to === user.id || isAdmin)}
+                      canApprove={canCount} canAssign={canCount}
+                      onAssign={(id, pickerId) => action('POST', '/picks/' + id + '/assign',
+                        { userId: pickerId }, false, 'Исполнитель назначен')}
                       onApprove={id => action('POST', '/picks/' + id + '/approve-shortage', {},
                         false, 'Недобор согласован')}
                       onConfirm={async (id, barcode, actualQty) => {
